@@ -3,7 +3,7 @@
 // ข้อความที่ผู้ชมส่ง (offer/bye) ส่งออกทุกตัวที่ต่ออยู่ — ผู้ไลฟ์ข้าม offer ซ้ำ, ผู้ชมรับ answer ครั้งเดียว (PROTOCOL.md)
 import { seal, open } from './crypto.js';
 
-const BROKERS = [
+export const BROKERS = [
   'wss://broker.emqx.io:8084/mqtt',
   'wss://mqtt-dashboard.com:8884/mqtt',   // HiveMQ ตัวเดียวกับ broker.hivemq.com (ชื่อนี้ไม่มี IPv6 จึงต่อได้เร็วกว่า)
   'wss://test.mosquitto.org:8081/mqtt',
@@ -62,6 +62,9 @@ export class Signal {
   }
 
   stop() {
+    // ปิดแล้วไม่ต้องรายงานสถานะอีก (กัน 'ขาดการเชื่อมต่อ' ทับข้อความของหน้าหลังจบไลฟ์)
+    this.onState = () => {};
+    this.onMessage = () => {};
     for (const c of this.clients) { try { c.end(true); } catch {} }
     this.clients = [];
   }

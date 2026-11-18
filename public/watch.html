@@ -4,16 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="robots" content="noindex, nofollow" />
-  <meta name="referrer" content="no-referrer" />
+  <!-- ปุ่ม Sign in with Google ต้องรู้ origin ของหน้า (no-referrer ทำให้ Google ปฏิเสธ) — ส่งแค่ origin ไม่ส่ง path/#token -->
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
   <!-- อนุญาตเฉพาะแหล่งที่หน้านี้ใช้จริง — สคริปต์/รูป/การเชื่อมต่ออื่นถูกเบราว์เซอร์บล็อกทั้งหมด (กัน injection) -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://unpkg.com; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: https://*.giphy.com; media-src 'self' blob:; connect-src 'self' https://api.giphy.com wss://broker.emqx.io:8084 wss://mqtt-dashboard.com:8884 wss://test.mosquitto.org:8081; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src blob:; manifest-src 'self'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://unpkg.com https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style; font-src https://fonts.gstatic.com; img-src 'self' blob: https://*.giphy.com; media-src 'self' blob:; connect-src 'self' https://api.giphy.com https://accounts.google.com/gsi/ wss://broker.emqx.io:8084 wss://mqtt-dashboard.com:8884 wss://test.mosquitto.org:8081; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src https://accounts.google.com/gsi/; worker-src blob:; manifest-src 'self'" />
   <meta name="theme-color" content="#ffe4ec" />
   <title>Daily Task Live</title>
   <link rel="icon" type="image/svg+xml" href="./assets/icon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Itim&family=Sarabun:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/watch.css?v=3" />
+  <link rel="stylesheet" href="./css/watch.css?v=4" />
 </head>
 <body>
   <!-- หน้าโหลดตอนเปิดลิงก์ — ความคืบหน้าเดินตามขั้นตอนเชื่อมต่อจริง (js/watch.js: loader) -->
@@ -59,7 +60,14 @@
       <span class="brand-title" id="streamTitle">Daily Task Live</span>
       <span class="live-badge" id="liveDot"><span class="live-dot"></span>LIVE</span>
     </div>
-    <div class="conn" id="connLabel">กำลังเชื่อมต่อ…</div>
+    <div class="topbar-right">
+      <div class="acct hidden" id="acct">
+        <span class="acct-icon" aria-hidden="true">👤</span>
+        <span class="acct-name" id="acctName"></span>
+        <button type="button" class="acct-out" id="logoutBtn" title="ออกจากระบบ / เปลี่ยนบัญชี Google">ออกจากระบบ</button>
+      </div>
+      <div class="conn" id="connLabel">กำลังเชื่อมต่อ…</div>
+    </div>
   </header>
 
   <main class="layout">
@@ -135,10 +143,44 @@
     </aside>
   </main>
 
+  <!-- เข้าสู่ระบบ (เปิดหน้าโดยไม่มีลิงก์ #token) — ตรวจจริงที่โปรแกรมผู้ไลฟ์ (js/lobby.js, PROTOCOL.md §7) -->
+  <div class="gate hidden" id="gate" role="dialog" aria-modal="true" aria-labelledby="gTitle">
+    <div class="gate-card">
+      <div class="gate-flower" aria-hidden="true">🌸</div>
+      <h2 class="gate-title" id="gTitle">เข้าสู่ระบบเพื่อดูไลฟ์</h2>
+      <p class="gate-sub">ยืนยันตัวตนด้วย Google แล้วกรอกไอดี/รหัสเกมที่ให้ร้านไว้ · เข้าครั้งเดียว ระบบจำไว้จนกว่าจะกดออกจากระบบ</p>
+
+      <div class="gate-step" id="gStep1">
+        <div class="gate-step-head"><span class="gate-num">1</span> ยืนยันตัวตนด้วย Google</div>
+        <div id="gBtnWrap" class="gate-gbtn"><div id="gBtn"></div></div>
+        <div id="gSigned" class="gate-signed hidden">
+          <span>✅ <span id="gEmail"></span></span>
+          <button type="button" class="gate-link" id="gSwitch">เปลี่ยนบัญชี</button>
+        </div>
+      </div>
+
+      <form class="gate-step locked" id="gStep2" autocomplete="on">
+        <div class="gate-step-head"><span class="gate-num">2</span> ไอดี / รหัสผ่านของเกม</div>
+        <div id="gForm-fields">
+          <input id="gUser" type="text" maxlength="200" placeholder="ไอดีเกม (username)" autocomplete="username" spellcheck="false" autocapitalize="off" disabled>
+          <div class="gate-pass">
+            <input id="gPass" type="password" maxlength="200" placeholder="รหัสผ่าน" autocomplete="current-password" disabled>
+            <button type="button" class="gate-eye" id="gShowPass" title="แสดง/ซ่อนรหัส">👁</button>
+          </div>
+          <button type="submit" class="send-btn gate-submit" id="gSubmit" disabled>🌸 เข้าดูไลฟ์</button>
+        </div>
+        <div class="gate-choose" id="gChoose"></div>
+      </form>
+
+      <div class="gate-msg" id="gMsg" role="alert"></div>
+      <div class="gate-note">ข้อมูลเข้ารหัสส่งตรงถึงโปรแกรมของร้านเท่านั้น · ลองผิด 5 ครั้งระบบจะพัก 15 นาที</div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <!-- integrity = ลายนิ้วมือไฟล์ ถ้า CDN ถูกแก้ไฟล์ เบราว์เซอร์จะไม่รันเลย -->
   <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js" integrity="sha384-u4uqeACkFcoKl57rBQJHVGDd1pqhW4w8X3WjTu1ZksPdxoLqdt34jpoNkJisE25W" crossorigin="anonymous"></script>
-  <script type="module" src="./js/watch.js?v=6"></script>
+  <script type="module" src="./js/watch.js?v=7"></script>
 </body>
 </html>
