@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Daily Task Live</title>
+  <link rel="icon" type="image/svg+xml" href="./assets/icon.svg">
+  <script>
+    // ลิงก์ที่มี token ให้ไปหน้าดูไลฟ์ (เผื่อมีคนตัด watch.html ออก)
+    if (location.hash.length > 1) location.replace('./watch.html' + location.hash);
+  </script>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0d0b14; color: #ece9f7;
+           font-family: system-ui, sans-serif; text-align: center; padding: 16px; }
+    p { color: #9a94b8; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Daily Task Live</h1>
+    <p>กรุณาเปิดลิงก์ดูไลฟ์จากข้อความใน Discord ของคุณ</p>
+  </main>
+</body>
+</html>

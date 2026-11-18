@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Daily Task Live</title>
+  <link rel="icon" type="image/svg+xml" href="./assets/icon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./css/watch.css?v=1" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="live-dot" id="liveDot"></span>
+      <span class="brand-title" id="streamTitle">Daily Task Live</span>
+    </div>
+    <div class="conn" id="connLabel">กำลังเชื่อมต่อ…</div>
+  </header>
+
+  <main class="layout">
+    <section class="stage-wrap">
+      <div class="stage" id="stage">
+        <video id="video" playsinline autoplay muted></video>
+
+        <div class="overlay" id="overlay">
+          <div class="overlay-icon" id="overlayIcon">⏳</div>
+          <div class="overlay-title" id="overlayTitle">กำลังเชื่อมต่อ…</div>
+          <div class="overlay-sub" id="overlaySub"></div>
+        </div>
+
+        <button class="unmute-btn hidden" id="unmuteBtn" type="button">🔊 แตะเพื่อเปิดเสียง</button>
+
+        <div class="controls" id="controls">
+          <button class="ctl-btn" id="muteBtn" type="button" title="ปิด/เปิดเสียง">🔇</button>
+          <input class="volume" id="volume" type="range" min="0" max="100" step="1" value="80" aria-label="ระดับเสียง">
+          <span class="vol-val" id="volVal">80%</span>
+          <span class="spacer"></span>
+          <span class="stats" id="stats"></span>
+          <select class="quality" id="quality" aria-label="คุณภาพวิดีโอ">
+            <option value="source">ต้นฉบับ</option>
+            <option value="1080">1080p</option>
+            <option value="720">720p</option>
+            <option value="480">480p</option>
+            <option value="360">360p</option>
+          </select>
+          <button class="ctl-btn" id="fsBtn" type="button" title="เต็มจอ">⛶</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="chat">
+      <div class="chat-head">💬 ส่งข้อความถึงผู้ไลฟ์</div>
+      <div class="chat-log" id="chatLog">
+        <div class="chat-hint">ข้อความ, Emoji, สติกเกอร์, GIF และรูป จะเด้งขึ้นบนจอของผู้ไลฟ์ (ไม่มีการเก็บประวัติ)</div>
+      </div>
+
+      <div class="picker hidden" id="picker">
+        <div class="picker-tabs">
+          <button type="button" class="tab active" data-tab="emoji">😊 Emoji</button>
+          <button type="button" class="tab" data-tab="sticker">🧸 สติกเกอร์</button>
+          <button type="button" class="tab" data-tab="gif">🎞️ GIF</button>
+        </div>
+        <div class="picker-body" id="tab-emoji"><div class="emoji-grid" id="emojiGrid"></div></div>
+        <div class="picker-body hidden" id="tab-sticker">
+          <div class="sec-title">ชุดของร้าน</div>
+          <div class="sticker-grid" id="packGrid"></div>
+          <div class="sec-title">ของฉัน <button type="button" class="mini-btn" id="addStickerBtn">＋ เพิ่ม</button></div>
+          <div class="sticker-grid" id="mineGrid"></div>
+        </div>
+        <div class="picker-body hidden" id="tab-gif">
+          <div class="gif-search" id="gifSearchRow">
+            <input type="search" id="gifQuery" placeholder="ค้นหา GIF…" maxlength="50">
+            <button type="button" class="mini-btn" id="gifUploadBtn">📁 อัปโหลด GIF</button>
+          </div>
+          <div class="gif-grid" id="gifGrid"></div>
+          <div class="giphy-attr" id="giphyAttr">Powered by GIPHY</div>
+        </div>
+      </div>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <button type="button" class="icon-btn" id="pickerBtn" title="Emoji / สติกเกอร์ / GIF">😊</button>
+        <button type="button" class="icon-btn" id="imageBtn" title="ส่งรูป">🖼️</button>
+        <input type="text" id="msgInput" maxlength="500" placeholder="พิมพ์ข้อความ…" enterkeyhint="send">
+        <button type="submit" class="send-btn" id="sendBtn">ส่ง</button>
+      </form>
+      <input type="file" id="fileImage" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+      <input type="file" id="fileGif" accept="image/gif" hidden>
+      <input type="file" id="fileSticker" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+    </aside>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+  <script type="module" src="./js/watch.js?v=1"></script>
+</body>
+</html>
