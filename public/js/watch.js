@@ -3,7 +3,7 @@
 //  • ไม่มีลิงก์ → เข้าสู่ระบบด้วย Google → รายการ "เกมของฉัน" → ดูเกมเดียว หรือหลายเกมพร้อมกัน (สูงสุด 4)
 import { parseToken } from './crypto.js?v=2';
 import { Lobby } from './lobby.js?v=2';
-import { LiveTile } from './stream.js?v=1';
+import { LiveTile } from './stream.js?v=2';
 import {
   MAX_FILE, OK_MIME, REASON_TEXT, cleanText, safeJson, safeGiphyUrl, clampInt, sanitizeImageFile,
 } from './security.js?v=1';
@@ -130,6 +130,7 @@ async function main() {
     history.replaceState(null, '', location.pathname);
     showView('watch');
     const t = addTile({ id: 'link', name: '' }, false);
+    linkWho(t, token);
     await t.start(token);
     return;
   }
@@ -310,6 +311,22 @@ async function logout() {
 }
 
 // ---------- รายการเกม ----------
+// เปิดจากลิงก์แต่เบราว์เซอร์นี้ล็อกอิน Google ไว้ → ขอบัตรชื่อจากร้าน
+// (เกมนี้อยู่ในรายการของบัญชี = Verify · ยังไม่ได้เพิ่มด้วยไอดี/รหัส = Unverify) · ไม่ได้ล็อกอิน = Guest
+async function linkWho(tile, token) {
+  const acct = acctLoad();
+  if (!acct) return;
+  // parseToken() คืนไบต์ 16 ตัว → แปลงกลับเป็น token แบบ base64url (แบบเดียวกับที่ร้านเก็บ)
+  const tok = typeof token === 'string' ? token
+    : btoa(String.fromCharCode(...token)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  let lobby = null;
+  try {
+    lobby = new Lobby();
+    const r = await lobby.request({ t: 'who', card: acct.card, sub: acct.sub, token: tok });
+    if (r && r.ok) tile.setWho(r.who);
+  } catch {} finally { try { lobby?.stop(); } catch {} }
+}
+
 function cleanGame(g) {
   const id = typeof g?.id === 'string' ? g.id.slice(0, 80) : '';
   if (!id) return null;
@@ -321,6 +338,7 @@ function cleanGame(g) {
     title: cleanText(g.title, 120, { singleLine: true }),
     live: !!g.live && !!tok,
     token: tok,
+    who: typeof g.who === 'string' && g.who.length <= 600 ? g.who : '',
     since: clampInt(g.since, 0, 1e14, 0),
   };
 }
@@ -339,6 +357,7 @@ function applyGames(r) {
     const g = st.games.find(x => x.id === id);
     if (!g) { closeTile(id); continue; }
     t.setName(label(g));
+    t.setWho(g.who);
     if (g.token && g.token !== t.token) t.start(g.token);
     else if (!g.token && !t.signal && !t.ended) t.waitOffline();
   }
@@ -435,7 +454,7 @@ function watchGames(ids) {
   for (const id of [...st.tiles.keys()]) if (!games.some(g => g.id === id)) closeTile(id);
   for (const g of games) {
     let t = st.tiles.get(g.id);
-    if (!t) { t = addTile({ ...g, name: label(g) }, true); t.start(g.token); }
+    if (!t) { t = addTile({ ...g, name: label(g) }, true); t.setWho(g.who); t.start(g.token); }
     else $('grid').appendChild(t.el);
   }
   st.focus = '';

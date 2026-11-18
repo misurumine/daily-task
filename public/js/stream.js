@@ -3,6 +3,8 @@ import { deriveSession, parseToken } from './crypto.js?v=2';
 import { Signal } from './signal.js?v=3';
 import { cleanText, safeJson, safeGiphyKey, clampInt } from './security.js?v=1';
 
+const WHO_RE = /^[A-Za-z0-9_-]{8,400}\.[A-Za-z0-9_-]{43}$/;
+
 const ICE = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -294,7 +296,11 @@ export class LiveTile {
     const dc = pc.createDataChannel('ctl', { ordered: true });
     this.dc = dc;
     dc.bufferedAmountLowThreshold = 256 * 1024;
-    dc.onopen = () => { this.sendCtl({ t: 'quality', q: this.quality, fps: this.fps }); this.hooks.onState?.(this); };
+    dc.onopen = () => {
+      this.sendCtl({ t: 'quality', q: this.quality, fps: this.fps });
+      if (this.who) this.sendCtl({ t: 'who', ticket: this.who });
+      this.hooks.onState?.(this);
+    };
     dc.onclose = () => this.hooks.onState?.(this);
     dc.onmessage = e => this._onCtl(e.data);
 
@@ -359,6 +365,14 @@ export class LiveTile {
 
   // ---------- DataChannel ----------
   get open() { return !!this.dc && this.dc.readyState === 'open'; }
+
+  /** บัตรชื่อผู้ชม (ร้านเซ็นให้ ผูกกับไลฟ์รอบนั้น) — ชื่อ Google + Verify/Unverify บนป๊อปอัปแชต · ไม่มี = Guest */
+  setWho(ticket) {
+    const t = typeof ticket === 'string' && WHO_RE.test(ticket) ? ticket : '';
+    if (t === (this.who || '')) return;
+    this.who = t;
+    if (t) this.sendCtl({ t: 'who', ticket: t });
+  }
 
   sendCtl(obj) {
     if (!this.open) return false;
