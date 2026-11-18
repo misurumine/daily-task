@@ -44,8 +44,9 @@ export async function open(key, topic, bytes) {
     if (u8.length < 12 + 16) return null;
     const pt = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: u8.subarray(0, 12), additionalData: enc.encode(topic) }, key, u8.subarray(12));
-    const msg = JSON.parse(dec.decode(pt));
-    if (!msg || typeof msg.t !== 'string' || Math.abs(Date.now() - Number(msg.ts)) > 60000) return null;
+    // ทิ้ง key อันตราย (__proto__ ฯลฯ) และรับเฉพาะ object
+    const msg = JSON.parse(dec.decode(pt), (k, v) => (k === '__proto__' || k === 'constructor' || k === 'prototype' ? undefined : v));
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg) || typeof msg.t !== 'string' || Math.abs(Date.now() - Number(msg.ts)) > 60000) return null;
     return msg;
   } catch {
     return null; // ถอดรหัสไม่ได้ = ไม่ใช่ข้อความของไลฟ์นี้ → ทิ้ง

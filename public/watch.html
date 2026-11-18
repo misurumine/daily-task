@@ -5,18 +5,59 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="robots" content="noindex, nofollow" />
   <meta name="referrer" content="no-referrer" />
+  <!-- อนุญาตเฉพาะแหล่งที่หน้านี้ใช้จริง — สคริปต์/รูป/การเชื่อมต่ออื่นถูกเบราว์เซอร์บล็อกทั้งหมด (กัน injection) -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://unpkg.com; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: https://*.giphy.com; media-src 'self' blob:; connect-src 'self' https://api.giphy.com wss://broker.emqx.io:8084 wss://mqtt-dashboard.com:8884 wss://test.mosquitto.org:8081; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src blob:; manifest-src 'self'" />
+  <meta name="theme-color" content="#ffe4ec" />
   <title>Daily Task Live</title>
   <link rel="icon" type="image/svg+xml" href="./assets/icon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/watch.css?v=1" />
+  <link href="https://fonts.googleapis.com/css2?family=Itim&family=Sarabun:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./css/watch.css?v=3" />
 </head>
 <body>
+  <!-- หน้าโหลดตอนเปิดลิงก์ — ความคืบหน้าเดินตามขั้นตอนเชื่อมต่อจริง (js/watch.js: loader) -->
+  <div class="splash" id="splash" role="status" aria-live="polite">
+    <div class="petals" id="splashPetals" aria-hidden="true"></div>
+    <div class="splash-inner">
+      <div class="bloom-wrap" aria-hidden="true">
+        <svg class="bloom" viewBox="0 0 120 120">
+          <defs>
+            <radialGradient id="petalGrad" cx=".5" cy=".85" r=".9">
+              <stop offset="0" stop-color="#ff7aa2"/><stop offset=".45" stop-color="#ffb3c8"/><stop offset="1" stop-color="#fff0f5"/>
+            </radialGradient>
+          </defs>
+          <g class="bp"><path d="M60 58 C44 46 42 22 54 12 L60 20 L66 12 C78 22 76 46 60 58Z" fill="url(#petalGrad)"/></g>
+          <g transform="rotate(72 60 60)"><g class="bp"><path d="M60 58 C44 46 42 22 54 12 L60 20 L66 12 C78 22 76 46 60 58Z" fill="url(#petalGrad)"/></g></g>
+          <g transform="rotate(144 60 60)"><g class="bp"><path d="M60 58 C44 46 42 22 54 12 L60 20 L66 12 C78 22 76 46 60 58Z" fill="url(#petalGrad)"/></g></g>
+          <g transform="rotate(216 60 60)"><g class="bp"><path d="M60 58 C44 46 42 22 54 12 L60 20 L66 12 C78 22 76 46 60 58Z" fill="url(#petalGrad)"/></g></g>
+          <g transform="rotate(288 60 60)"><g class="bp"><path d="M60 58 C44 46 42 22 54 12 L60 20 L66 12 C78 22 76 46 60 58Z" fill="url(#petalGrad)"/></g></g>
+          <circle cx="60" cy="60" r="9" fill="#fff6c8"/>
+          <g fill="#e0567f"><circle cx="60" cy="52" r="1.8"/><circle cx="67" cy="57" r="1.8"/><circle cx="65" cy="65" r="1.8"/><circle cx="55" cy="65" r="1.8"/><circle cx="53" cy="57" r="1.8"/></g>
+        </svg>
+        <div class="orbit"><i></i><i></i><i></i></div>
+      </div>
+      <h1 class="splash-title">Daily Task Live</h1>
+      <div class="splash-step" id="splashStep">กำลังเปิดหน้า…</div>
+      <div class="progress" aria-hidden="true">
+        <div class="progress-fill" id="splashFill"></div>
+        <div class="progress-petal" id="splashPetal">🌸</div>
+      </div>
+      <ol class="steps" id="splashSteps" aria-hidden="true">
+        <li>เปิดหน้า</li><li>เชื่อมต่อ</li><li>หาผู้ไลฟ์</li><li>รับภาพ</li>
+      </ol>
+      <div class="splash-note">การเชื่อมต่อเข้ารหัสตลอดทาง · ไม่มีการเก็บประวัติแชต</div>
+    </div>
+  </div>
+
+  <img class="sakura-tree" src="./assets/sakura-tree.svg" alt="" aria-hidden="true">
+  <div class="petals" id="petals" aria-hidden="true"></div>
+
   <header class="topbar">
     <div class="brand">
-      <span class="live-dot" id="liveDot"></span>
+      <span class="brand-mark" aria-hidden="true">🌸</span>
       <span class="brand-title" id="streamTitle">Daily Task Live</span>
+      <span class="live-badge" id="liveDot"><span class="live-dot"></span>LIVE</span>
     </div>
     <div class="conn" id="connLabel">กำลังเชื่อมต่อ…</div>
   </header>
@@ -54,7 +95,7 @@
     </section>
 
     <aside class="chat">
-      <div class="chat-head">💬 ส่งข้อความถึงผู้ไลฟ์</div>
+      <div class="chat-head">🌸 ส่งข้อความถึงผู้ไลฟ์</div>
       <div class="chat-log" id="chatLog">
         <div class="chat-hint">ข้อความ, Emoji, สติกเกอร์, GIF และรูป จะเด้งขึ้นบนจอของผู้ไลฟ์ (ไม่มีการเก็บประวัติ)</div>
       </div>
@@ -96,7 +137,8 @@
 
   <div class="toast" id="toast"></div>
 
-  <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
-  <script type="module" src="./js/watch.js?v=4"></script>
+  <!-- integrity = ลายนิ้วมือไฟล์ ถ้า CDN ถูกแก้ไฟล์ เบราว์เซอร์จะไม่รันเลย -->
+  <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js" integrity="sha384-u4uqeACkFcoKl57rBQJHVGDd1pqhW4w8X3WjTu1ZksPdxoLqdt34jpoNkJisE25W" crossorigin="anonymous"></script>
+  <script type="module" src="./js/watch.js?v=6"></script>
 </body>
 </html>

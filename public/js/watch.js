@@ -1,6 +1,9 @@
 // หน้าดูไลฟ์ (ผู้ชม) — Protocol v1 (ดู PROTOCOL.md)
-import { parseToken, deriveSession } from './crypto.js';
+import { parseToken, deriveSession } from './crypto.js?v=2';
 import { Signal } from './signal.js';
+import {
+  MAX_FILE, OK_MIME, REASON_TEXT, cleanText, safeJson, safeGiphyUrl, safeGiphyKey, clampInt, sanitizeImageFile,
+} from './security.js?v=1';
 
 const $ = id => document.getElementById(id);
 const ICE = [
@@ -8,9 +11,7 @@ const ICE = [
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
 ];
-const MAX_FILE = 5 * 1024 * 1024;
 const CHUNK = 12 * 1024;
-const OK_MIME = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const SEND_GAP_MS = 700;
 const STATUS_TIMEOUT_MS = 12000;
 // ต่อ broker ได้แล้วแต่ยังไม่เคยได้ status เลยนานเท่านี้ → บอกผู้ชมว่ายังไม่พบผู้ไลฟ์ (แต่ยังรอต่อ)
@@ -26,6 +27,64 @@ const st = {
   // fps ที่อยากได้ — ผู้ไลฟ์ปัดลงให้ไม่เกิน Hz จอของตัวเอง แล้วบอกค่าจริงกลับมาใน info
   fps: Number(lsGet('dt_fps', '30')) || 30,
 };
+
+// ---------- หน้าโหลด (ซากุระ) ----------
+// ความคืบหน้าเดินตามขั้นตอนจริง: 0 เปิดหน้า → 1 เชื่อมต่อ broker → 2 หาผู้ไลฟ์ → 3 ขอภาพ → เฟรมแรกขึ้นจอ = จบ
+// ไม่มีภาพให้ดู (ลิงก์ผิด/พักไลฟ์/จบ/ไม่พบผู้ไลฟ์/เต็ม) → ปิดหน้าโหลดแล้วให้กล่องข้อความบนจอวิดีโอบอกแทน
+const loader = (() => {
+  const STEP_TEXT = ['กำลังเปิดหน้า…', 'กำลังเชื่อมต่อเซิร์ฟเวอร์…', 'กำลังค้นหาผู้ไลฟ์…', 'พบผู้ไลฟ์แล้ว <b>กำลังขอภาพ…</b>', 'กำลังรับภาพ…'];
+  const PCT = [8, 30, 52, 74, 92];
+  const shownAt = Date.now();
+  let cur = -1, closed = false;
+  function set(i) {
+    if (closed || i <= cur) return;
+    cur = i;
+    const el = $('splashStep');
+    el.textContent = '';
+    // ข้อความคงที่ของหน้านี้เอง (ไม่ใช่ข้อมูลจากภายนอก) — แยก <b> ด้วย DOM ไม่ใช้ innerHTML
+    const m = /^(.*)<b>(.*)<\/b>$/.exec(STEP_TEXT[i]);
+    if (m) { el.append(m[1]); const b = document.createElement('b'); b.textContent = m[2]; el.append(b); }
+    else el.textContent = STEP_TEXT[i];
+    move(PCT[i]);
+    [...$('splashSteps').children].forEach((li, k) => {
+      li.classList.toggle('done', k < Math.min(i, 4) || (i === 4 && k <= 3));
+      li.classList.toggle('active', k === Math.min(i, 3) && i < 4);
+    });
+  }
+  function move(pct) {
+    $('splashFill').style.width = pct + '%';
+    $('splashPetal').style.left = pct + '%';
+  }
+  function close(fast = false) {
+    if (closed) return;
+    closed = true;
+    move(100);
+    const wait = fast ? 0 : Math.max(0, 1100 - (Date.now() - shownAt));   // เห็นหน้าโหลดอย่างน้อย ~1 วิ ไม่วูบ
+    setTimeout(() => {
+      $('splash').classList.add('done');
+      setTimeout(() => { $('splashPetals').replaceChildren(); $('splash').remove(); }, 700);
+    }, wait + 250);
+  }
+  return { step: set, done: () => close(false), skip: () => close(true), get closed() { return closed; } };
+})();
+
+// กลีบซากุระร่วง — DOM + CSS transform ล้วน (ไม่กิน CPU) หยุดเมื่อสลับแท็บ / ปิดเมื่อตั้ง "ลดการเคลื่อนไหว"
+function spawnPetals(box, count) {
+  if (!box || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  for (let i = 0; i < count; i++) {
+    const p = document.createElement('i');
+    p.className = 'petal';
+    p.style.setProperty('--x', rnd(-5, 100).toFixed(1) + '%');
+    p.style.setProperty('--s', rnd(9, 18).toFixed(0) + 'px');
+    p.style.setProperty('--d', rnd(9, 17).toFixed(1) + 's');
+    p.style.setProperty('--delay', (-rnd(0, 17)).toFixed(1) + 's');
+    p.style.setProperty('--sway', rnd(-70, 70).toFixed(0) + 'px');
+    p.style.setProperty('--o', rnd(.55, .95).toFixed(2));
+    box.appendChild(p);
+  }
+}
+document.addEventListener('visibilitychange', () => document.body.classList.toggle('paused', document.hidden));
 
 // ---------- utils ----------
 function lsGet(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } }
@@ -45,6 +104,8 @@ function overlay(icon, title, sub = '') {
   const o = $('overlay');
   if (!icon) { o.classList.add('hidden'); return; }
   o.classList.remove('hidden');
+  // ข้อความสถานะที่ไม่ใช่ "กำลังโหลด" (พักไลฟ์/จบ/ไม่พบ/เต็ม/ลิงก์ผิด) → ปิดหน้าโหลดให้ผู้ชมเห็นข้อความ
+  if (!['⏳', '📡'].includes(icon)) loader.skip();
   $('overlayIcon').textContent = icon;
   $('overlayTitle').textContent = title;
   $('overlaySub').textContent = sub;
@@ -53,6 +114,7 @@ function overlay(icon, title, sub = '') {
 function setLive(on) {
   st.live = on;
   $('liveDot').classList.toggle('on', on);
+  $('liveDot').title = on ? 'กำลังไลฟ์' : 'ไม่ได้ไลฟ์อยู่';
 }
 
 function setComposer(enabled) {
@@ -62,6 +124,11 @@ function setComposer(enabled) {
 
 // ---------- signaling ----------
 async function main() {
+  loader.step(0);
+  spawnPetals($('splashPetals'), 26);
+  spawnPetals($('petals'), 14);
+  // กันค้างหน้าโหลด (เช่น เน็ตต่อ broker ไม่ได้เลย) — 25 วิแล้วให้กล่องสถานะบนจอวิดีโอบอกแทน
+  setTimeout(() => loader.skip(), 25000);
   setComposer(false);
   setupControls();
   setupChat();
@@ -81,6 +148,7 @@ async function main() {
   history.replaceState(null, '', location.pathname);
 
   const session = await deriveSession(token);
+  loader.step(1);
   overlay('⏳', 'กำลังเชื่อมต่อ…', 'รอสัญญาณจากผู้ไลฟ์');
   st.signal = new Signal(session, onSignal, onConnState);
   st.signal.start();
@@ -91,14 +159,16 @@ async function main() {
 function onConnState(s) {
   $('connLabel').textContent = s === 'online' ? 'เชื่อมต่อแล้ว' : s === 'connecting' ? 'กำลังเชื่อมต่อ…' : 'ขาดการเชื่อมต่อ';
   if (s === 'online' && !st.onlineSince) st.onlineSince = Date.now();
+  if (s === 'online') loader.step(2);
 }
 
 function onSignal(m) {
   if (st.ended) return;
   if (m.t === 'status') {
     st.lastStatus = Date.now();
-    if (typeof m.title === 'string' && m.title) $('streamTitle').textContent = m.title;
-    if (typeof m.giphy === 'string') updateGiphy(m.giphy);
+    const title = cleanText(m.title, 120, { singleLine: true });   // ชื่อหน้าต่างเกม — กรองก่อนแสดงเสมอ
+    if (title) { $('streamTitle').textContent = title; document.title = title + ' · Daily Task Live'; }
+    if (typeof m.giphy === 'string') updateGiphy(safeGiphyKey(m.giphy));
     setLive(!!m.live);
     if (m.live) {
       if (!st.pc) startPeer();
@@ -109,6 +179,7 @@ function onSignal(m) {
   } else if (m.t === 'end') {
     endStream('🏁', 'ไลฟ์จบแล้ว', 'ขอบคุณที่รับชม — ลิงก์นี้ใช้ไม่ได้อีกแล้ว');
   } else if (m.t === 'answer' && m.to === vid && st.pc) {
+    if (typeof m.sdp !== 'string' || m.sdp.length > 100000) return;
     // QoS 0 + หลาย broker อาจทำให้ได้ answer ซ้ำ — รับเฉพาะตอนที่ยังรอ answer อยู่จริง
     if (st.pc.signalingState !== 'have-local-offer') return;
     clearTimeout(st.answerTimer);
@@ -150,6 +221,7 @@ function endStream(icon, title, sub) {
 // ---------- WebRTC ----------
 async function startPeer() {
   closePeer();
+  loader.step(3);
   overlay('📡', 'กำลังเปิดไลฟ์…', 'กำลังเชื่อมต่อกับผู้ไลฟ์');
   const pc = new RTCPeerConnection({ iceServers: ICE });
   st.pc = pc;
@@ -163,6 +235,7 @@ async function startPeer() {
   dc.onmessage = e => onCtl(e.data);
 
   pc.ontrack = e => {
+    if (e.track.kind === 'video') waitFirstFrame();
     const ms = video.srcObject instanceof MediaStream ? video.srcObject : new MediaStream();
     ms.addTrack(e.track);
     video.srcObject = ms;
@@ -172,7 +245,7 @@ async function startPeer() {
   pc.onconnectionstatechange = () => {
     const s = pc.connectionState;
     if (pc !== st.pc) return;
-    if (s === 'connected') { if (st.live) overlay(null); }
+    if (s === 'connected') { loader.step(4); if (st.live) overlay(null); }
     else if (s === 'failed' || s === 'closed') retryPeer();
     else if (s === 'disconnected') setTimeout(() => { if (pc === st.pc && pc.connectionState === 'disconnected') retryPeer(); }, 5000);
   };
@@ -188,6 +261,16 @@ async function startPeer() {
     console.error(e);
     retryPeer();
   }
+}
+
+// ภาพเฟรมแรกขึ้นจอจริง → ปิดหน้าโหลด
+function waitFirstFrame() {
+  if (loader.closed) return;
+  const finish = () => loader.done();   // เรียกซ้ำได้ (ปิดครั้งเดียว)
+  // rVFC ไม่ยิงเมื่อหน้าไม่ได้แสดงผล (แท็บพื้นหลัง) → ฟัง loadeddata/playing ด้วย อันไหนมาก่อนก็ปิด
+  if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(finish);
+  video.addEventListener('loadeddata', finish, { once: true });
+  video.addEventListener('playing', finish, { once: true });
 }
 
 function waitIceComplete(pc, ms) {
@@ -225,18 +308,19 @@ function sendCtl(obj) {
 
 const pendingAcks = new Map(); // id -> element
 function onCtl(raw) {
-  let m;
-  try { m = JSON.parse(raw); } catch { return; }
+  const m = safeJson(raw, 16 * 1024);
+  if (!m) return;
   if (m.t === 'info') {
-    if (m.w && m.h) $('stats').dataset.size = `${m.w}×${m.h}`;
+    const w = clampInt(m.w, 0, 8192, 0), h = clampInt(m.h, 0, 8192, 0);
+    if (w && h) $('stats').dataset.size = `${w}×${h}`;
     renderFpsOptions(m);
   } else if (m.t === 'ack') {
-    const el = pendingAcks.get(m.id);
+    const el = pendingAcks.get(String(m.id || ''));
     if (el) { el.classList.add('acked'); pendingAcks.delete(m.id); }
   } else if (m.t === 'rate') {
-    toast(`ส่งเร็วเกินไป รออีก ${Math.ceil((m.wait || 1000) / 1000)} วินาที`);
+    toast(`ส่งเร็วเกินไป รออีก ${Math.ceil(clampInt(m.wait, 1, 600000, 1000) / 1000)} วินาที`);
   } else if (m.t === 'error') {
-    const why = { too_large: 'ไฟล์ใหญ่เกิน 5 MB', bad_type: 'ไฟล์นี้ไม่ใช่รูปที่รองรับ' }[m.reason] || 'ส่งไม่สำเร็จ';
+    const why = Object.hasOwn(REASON_TEXT, m.reason) ? REASON_TEXT[m.reason] : 'ส่งไม่สำเร็จ';
     toast(why);
   }
 }
@@ -264,9 +348,10 @@ function logItem(node) {
   return row;
 }
 
-function sendText(text) {
-  text = text.trim().slice(0, 500);
-  if (!text || !canSend()) return false;
+function sendText(raw) {
+  const text = cleanText(raw, 500);   // ลบอักขระควบคุม/กลับทิศ/แท็ก HTML/javascript: ก่อนส่ง
+  if (!text) { if (raw.trim()) toast('ข้อความนี้มีแต่อักขระที่ไม่อนุญาต จึงไม่ส่ง'); return !!raw.trim(); }
+  if (!canSend()) return false;
   const id = rid();
   sendCtl({ t: 'chat', id, text });
   const span = document.createElement('span');
@@ -276,25 +361,33 @@ function sendText(text) {
   return true;
 }
 
-function sendGif(url, w, h, previewUrl) {
+function sendGif(rawUrl, rawW, rawH, rawPreview) {
+  const url = safeGiphyUrl(rawUrl);
+  if (!url) { toast('GIF นี้มาจากแหล่งที่ไม่อนุญาต'); return; }
+  const preview = safeGiphyUrl(rawPreview) || url;
   if (!canSend()) return;
   const id = rid();
-  sendCtl({ t: 'gif', id, url, w, h });
+  sendCtl({ t: 'gif', id, url, w: clampInt(rawW, 1, 4096, 200), h: clampInt(rawH, 1, 4096, 200) });
   const img = document.createElement('img');
   img.className = 'msg-img';
-  img.src = previewUrl || url;
+  img.src = preview;
   img.alt = 'GIF';
   pendingAcks.set(id, logItem(img));
   closePicker();
 }
 
-async function sendFile(blob, kind, name = 'image') {
-  if (!OK_MIME.includes(blob.type)) { toast('รองรับเฉพาะ PNG, JPG, GIF, WEBP'); return; }
-  if (blob.size > MAX_FILE) { toast('ไฟล์ใหญ่เกิน 5 MB'); return; }
+async function sendFile(file, kind, name = 'image') {
+  if (!st.dc || st.dc.readyState !== 'open') { toast('ยังไม่ได้เชื่อมต่อไลฟ์'); return; }
+  // ตรวจไบต์จริง + สแกนโค้ดฝัง + จำกัดขนาด + วาดใหม่ลบข้อมูลแฝง (GIF คงไฟล์เดิม)
+  const safe = await sanitizeImageFile(file);
+  if (!safe.ok) { toast(REASON_TEXT[safe.reason] || 'ส่งไม่สำเร็จ'); return; }
+  if (safe.mime === 'image/gif' && kind === 'image') kind = 'gif';
+  const blob = safe.blob;
   if (!canSend()) return;
   const id = rid();
   const dc = st.dc;
-  sendCtl({ t: 'file-start', id, kind, mime: blob.type, size: blob.size, name: String(name).slice(0, 80) });
+  const cleanName = cleanText(String(name), 80, { singleLine: true }).replace(/[\\/:*?"<>|]/g, '_') || 'image';
+  sendCtl({ t: 'file-start', id, kind, mime: safe.mime, size: blob.size, name: cleanName });
   const img = document.createElement('img');
   img.className = 'msg-img';
   img.src = URL.createObjectURL(blob);
@@ -321,9 +414,9 @@ async function sendFile(blob, kind, name = 'image') {
 // ตัวเลือก fps มาจากผู้ไลฟ์ (fpsOptions ไม่เกิน Hz จอของผู้ไลฟ์) — ผู้ไลฟ์รุ่นเก่าไม่ส่งมา = ซ่อนไว้
 function renderFpsOptions(m) {
   const sel = $('fps');
-  const opts = Array.isArray(m.fpsOptions) ? m.fpsOptions.map(Number).filter(n => Number.isInteger(n) && n > 0 && n <= 1000) : [];
+  const opts = Array.isArray(m.fpsOptions) ? m.fpsOptions.slice(0, 20).map(Number).filter(n => Number.isInteger(n) && n > 0 && n <= 1000) : [];
   if (!opts.length) { sel.classList.add('hidden'); return; }
-  const cur = Number(m.fps) || st.fps;
+  const cur = clampInt(m.fps, 1, 1000, st.fps);
   if (sel.dataset.opts !== opts.join(',')) {
     sel.replaceChildren(...opts.map(n => {
       const o = document.createElement('option');
@@ -334,7 +427,7 @@ function renderFpsOptions(m) {
     sel.dataset.opts = opts.join(',');
   }
   sel.value = String(opts.includes(cur) ? cur : opts[opts.length - 1]);
-  sel.title = `เฟรมต่อวินาที (สูงสุด ${Number(m.maxFps) || opts[opts.length - 1]} fps ตาม Hz จอของผู้ไลฟ์)`;
+  sel.title = `เฟรมต่อวินาที (สูงสุด ${clampInt(m.maxFps, 1, 1000, opts[opts.length - 1])} fps ตาม Hz จอของผู้ไลฟ์)`;
   sel.classList.remove('hidden');
 }
 
@@ -457,7 +550,9 @@ function setupChat() {
     const f = e.target.files[0]; e.target.value = '';
     if (!f) return;
     if (!OK_MIME.includes(f.type) || f.size > MAX_FILE) { toast('สติกเกอร์ต้องเป็นรูป (≤ 5 MB)'); return; }
-    await stickerDb('put', { id: rid() + Date.now().toString(36), blob: f, added: Date.now() });
+    const safe = await sanitizeImageFile(f);   // เก็บเฉพาะไฟล์ที่ผ่านการตรวจ/ล้างข้อมูลแฝงแล้ว
+    if (!safe.ok) { toast(REASON_TEXT[safe.reason]); return; }
+    await stickerDb('put', { id: rid() + Date.now().toString(36), blob: safe.blob, added: Date.now() });
     renderMine();
     toast('เพิ่มสติกเกอร์แล้ว (เก็บไว้ในเบราว์เซอร์นี้เท่านั้น)');
   });
@@ -472,13 +567,21 @@ function setupChat() {
 
 function closePicker() { $('picker').classList.add('hidden'); }
 
+// ข้อความว่างในตาราง — ใช้ textContent (ไม่มี innerHTML ในหน้านี้เลย)
+function emptyMsg(grid, text) {
+  const d = document.createElement('div');
+  d.className = 'empty';
+  d.textContent = text;
+  grid.replaceChildren(d);
+}
+
 async function loadPack() {
   const grid = $('packGrid');
   try {
     const r = await fetch('./stickers/index.json', { cache: 'no-cache' });
     const list = r.ok ? await r.json() : [];
     if (!Array.isArray(list) || !list.length) {
-      grid.innerHTML = '<div class="empty">ยังไม่มีสติกเกอร์ชุดของร้าน</div>';
+      emptyMsg(grid, 'ยังไม่มีสติกเกอร์ชุดของร้าน');
       return;
     }
     for (const item of list) {
@@ -486,7 +589,7 @@ async function loadPack() {
       if (!file || !/^[\w.\-]+\.(png|jpe?g|gif|webp)$/i.test(file)) continue;
       const img = document.createElement('img');
       img.src = './stickers/' + file;
-      img.alt = (item && item.name) || file;
+      img.alt = cleanText(item && item.name, 60, { singleLine: true }) || file;
       img.title = img.alt;
       img.loading = 'lazy';
       img.addEventListener('click', async () => {
@@ -496,7 +599,7 @@ async function loadPack() {
       grid.appendChild(img);
     }
   } catch {
-    grid.innerHTML = '<div class="empty">โหลดสติกเกอร์ไม่สำเร็จ</div>';
+    emptyMsg(grid, 'โหลดสติกเกอร์ไม่สำเร็จ');
   }
 }
 
@@ -518,10 +621,10 @@ function stickerDb(op, value) {
 
 async function renderMine() {
   const grid = $('mineGrid');
-  grid.innerHTML = '';
+  grid.replaceChildren();
   const items = (await stickerDb('all')) || [];
   if (!items.length) {
-    grid.innerHTML = '<div class="empty">กด ＋ เพิ่ม เพื่อใส่รูปของคุณเป็นสติกเกอร์</div>';
+    emptyMsg(grid, 'กด ＋ เพิ่ม เพื่อใส่รูปของคุณเป็นสติกเกอร์');
     return;
   }
   items.sort((a, b) => a.added - b.added);
@@ -547,7 +650,7 @@ function updateGiphy(key) {
   st.giphyKey = key || '';
   $('gifQuery').classList.toggle('hidden', !st.giphyKey);
   $('giphyAttr').classList.toggle('hidden', !st.giphyKey);
-  if (!st.giphyKey) $('gifGrid').innerHTML = '<div class="empty">ค้นหา GIF ยังไม่เปิดใช้ — อัปโหลดไฟล์ GIF ของคุณเองได้</div>';
+  if (!st.giphyKey) emptyMsg($('gifGrid'), 'ค้นหา GIF ยังไม่เปิดใช้ — อัปโหลดไฟล์ GIF ของคุณเองได้');
 }
 
 let gifReq = 0;
@@ -558,27 +661,31 @@ async function loadGifs(q) {
   const base = 'https://api.giphy.com/v1/gifs/';
   const params = new URLSearchParams({ api_key: st.giphyKey, limit: '24', rating: 'pg-13' });
   let url = base + 'trending?' + params;
-  if (q && q.trim()) { params.set('q', q.trim()); url = base + 'search?' + params; }
+  const query = cleanText(q, 50, { singleLine: true });
+  if (query) { params.set('q', query); url = base + 'search?' + params; }
   try {
     const r = await fetch(url);
     if (my !== gifReq) return;
-    if (!r.ok) { grid.innerHTML = '<div class="empty">ค้นหา GIF ไม่สำเร็จ (อาจเกินโควตาชั่วคราว)</div>'; return; }
-    const data = (await r.json()).data || [];
-    grid.innerHTML = '';
+    if (!r.ok) { emptyMsg(grid, 'ค้นหา GIF ไม่สำเร็จ (อาจเกินโควตาชั่วคราว)'); return; }
+    const body = await r.json();
+    const data = Array.isArray(body && body.data) ? body.data.slice(0, 50) : [];
+    grid.replaceChildren();
     for (const g of data) {
-      const send = g.images && (g.images.fixed_height || g.images.downsized);
-      const prev = g.images && (g.images.fixed_height_small || send);
-      if (!send || !/^https:\/\/media\d*\.giphy\.com\//.test(send.url)) continue;
+      const send = g && g.images && (g.images.fixed_height || g.images.downsized);
+      const prev = g && g.images && (g.images.fixed_height_small || send);
+      const sendUrl = send && safeGiphyUrl(send.url);
+      const prevUrl = (prev && safeGiphyUrl(prev.url)) || sendUrl;
+      if (!sendUrl) continue;   // URL นอก media*.giphy.com/media/ → ทิ้ง
       const img = document.createElement('img');
-      img.src = prev.url;
-      img.alt = g.title || 'GIF';
+      img.src = prevUrl;
+      img.alt = cleanText(g.title, 80, { singleLine: true }) || 'GIF';
       img.loading = 'lazy';
-      img.addEventListener('click', () => sendGif(send.url, Number(send.width), Number(send.height), prev.url));
+      img.addEventListener('click', () => sendGif(sendUrl, send.width, send.height, prevUrl));
       grid.appendChild(img);
     }
-    if (!grid.children.length) grid.innerHTML = '<div class="empty">ไม่พบ GIF</div>';
+    if (!grid.children.length) emptyMsg(grid, 'ไม่พบ GIF');
   } catch {
-    grid.innerHTML = '<div class="empty">ค้นหา GIF ไม่สำเร็จ</div>';
+    emptyMsg(grid, 'ค้นหา GIF ไม่สำเร็จ');
   }
 }
 
