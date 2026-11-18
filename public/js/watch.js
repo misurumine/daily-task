@@ -61,6 +61,8 @@ async function main() {
   setComposer(false);
   setupControls();
   setupChat();
+  // เปิดลิงก์ใหม่ในแท็บเดิม (เปลี่ยนแค่ #token) เบราว์เซอร์ไม่โหลดหน้าใหม่ → โหลดใหม่เองให้ใช้ลิงก์ใหม่
+  window.addEventListener('hashchange', () => { if (parseToken(location.hash)) location.reload(); });
   const token = parseToken(location.hash);
   if (!token) {
     overlay('🔒', 'ลิงก์ไม่ถูกต้อง', 'กรุณาเปิดลิงก์ดูไลฟ์จากข้อความใน Discord ของคุณ');
