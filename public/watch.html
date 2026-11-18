@@ -85,7 +85,7 @@
         <div class="games-sub">ติ๊กเลือกเกมที่กำลังไลฟ์ (สูงสุด 4 เกม) แล้วกด "ดูพร้อมกัน" หรือกด "▶ ดู" เพื่อดูเกมเดียว · เรียงตามเวลาที่เข้าไอดี</div>
 
         <form class="add-form hidden" id="addForm" autocomplete="on">
-          <div class="add-head">＋ เพิ่มเกมด้วยไอดี/รหัสเกมที่ให้ร้านไว้ (ครั้งเดียวต่อเกม)</div>
+          <div class="add-head">＋ เพิ่มเกมด้วยไอดี/รหัสเกมที่ให้ร้านไว้ (เกมอื่นที่ใช้ไอดี/รหัสเดียวกันจะเพิ่มให้ด้วย)</div>
           <div class="add-row">
             <input id="aUser" type="text" maxlength="200" placeholder="ไอดีเกม (username)" autocomplete="username" spellcheck="false" autocapitalize="off">
             <div class="gate-pass">
@@ -97,7 +97,6 @@
             <button type="submit" class="send-btn" id="aSubmit">🌸 เพิ่มเกม</button>
             <button type="button" class="mini-btn" id="aCancel">ยกเลิก</button>
           </div>
-          <div class="gate-choose" id="aChoose"></div>
           <div class="gate-msg" id="aMsg" role="alert"></div>
           <div class="gate-note">ข้อมูลเข้ารหัสส่งตรงถึงโปรแกรมของร้านเท่านั้น · ลองผิด 5 ครั้งระบบจะพัก 15 นาที</div>
         </form>
@@ -174,6 +173,6 @@
 
   <!-- integrity = ลายนิ้วมือไฟล์ ถ้า CDN ถูกแก้ไฟล์ เบราว์เซอร์จะไม่รันเลย -->
   <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js" integrity="sha384-u4uqeACkFcoKl57rBQJHVGDd1pqhW4w8X3WjTu1ZksPdxoLqdt34jpoNkJisE25W" crossorigin="anonymous"></script>
-  <script type="module" src="./js/watch.js?v=8"></script>
+  <script type="module" src="./js/watch.js?v=9"></script>
 </body>
 </html>

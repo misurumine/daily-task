@@ -317,12 +317,15 @@ function cleanGame(g) {
   return {
     id,
     name: cleanText(g.name, 80, { singleLine: true }) || id,
+    game: cleanText(g.game, 60, { singleLine: true }),
     title: cleanText(g.title, 120, { singleLine: true }),
     live: !!g.live && !!tok,
     token: tok,
     since: clampInt(g.since, 0, 1e14, 0),
   };
 }
+
+const label = g => (g.game ? `${g.name} · ${g.game}` : g.name);
 
 function applyGames(r) {
   st.games = (Array.isArray(r.games) ? r.games.slice(0, 50) : []).map(cleanGame).filter(Boolean);
@@ -335,7 +338,7 @@ function applyGames(r) {
   for (const [id, t] of st.tiles) {
     const g = st.games.find(x => x.id === id);
     if (!g) { closeTile(id); continue; }
-    t.setName(g.name);
+    t.setName(label(g));
     if (g.token && g.token !== t.token) t.start(g.token);
     else if (!g.token && !t.signal && !t.ended) t.waitOffline();
   }
@@ -361,7 +364,7 @@ function renderGames() {
     pick.checked = st.selected.has(g.id);
     pick.disabled = !g.live || (!pick.checked && st.selected.size >= MAX_TILES);
     pick.title = g.live ? 'เลือกเพื่อดูพร้อมกันหลายเกม' : 'เกมนี้ยังไม่ได้ไลฟ์';
-    pick.setAttribute('aria-label', 'เลือก ' + g.name);
+    pick.setAttribute('aria-label', 'เลือก ' + label(g));
     pick.addEventListener('change', () => {
       if (pick.checked) {
         if (st.selected.size >= MAX_TILES) { pick.checked = false; toast(`ดูพร้อมกันได้สูงสุด ${MAX_TILES} เกม`); return; }
@@ -371,7 +374,8 @@ function renderGames() {
     });
     const info = el('div', 'game-info');
     info.append(el('div', 'game-name', g.name));
-    if (g.title) info.append(el('div', 'game-title', g.title));
+    const sub = [g.game, g.title && g.title !== g.game ? g.title : ''].filter(Boolean).join(' · ');
+    if (sub) info.append(el('div', 'game-title', sub));
     const status = el('div', 'game-status');
     if (g.live) {
       const since = g.since ? new Date(g.since).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : '';
@@ -431,7 +435,7 @@ function watchGames(ids) {
   for (const id of [...st.tiles.keys()]) if (!games.some(g => g.id === id)) closeTile(id);
   for (const g of games) {
     let t = st.tiles.get(g.id);
-    if (!t) { t = addTile(g, true); t.start(g.token); }
+    if (!t) { t = addTile({ ...g, name: label(g) }, true); t.start(g.token); }
     else $('grid').appendChild(t.el);
   }
   st.focus = '';
@@ -443,7 +447,7 @@ function watchGames(ids) {
 }
 
 async function removeGame(g) {
-  if (!confirm(`เอา "${g.name}" ออกจากรายการ?\n(เพิ่มกลับได้ด้วยไอดี/รหัสเกม)`)) return;
+  if (!confirm(`เอา "${label(g)}" ออกจากรายการ?\n(เพิ่มกลับได้ด้วยไอดี/รหัสเกม — เกมอื่นที่ใช้ไอดี/รหัสเดียวกันจะกลับมาด้วย)`)) return;
   const r = await st.lobby.request({ t: 'remove', card: st.acct.card, sub: st.acct.sub, id: g.id });
   if (!r) { toast('ติดต่อผู้ไลฟ์ไม่ได้ ลองใหม่อีกครั้ง'); return; }
   if (!r.ok) { expired(); return; }
@@ -453,7 +457,7 @@ async function removeGame(g) {
 }
 
 // ---------- เพิ่มเกม ----------
-const addState = { pick: '', busy: false };
+const addState = { busy: false };
 const REASON_ADD = {
   bad: 'ไอดีหรือรหัสผ่านไม่ถูกต้อง',
   expired: 'การเข้าสู่ระบบหมดอายุ',
@@ -462,8 +466,6 @@ const REASON_ADD = {
 function openAddForm() {
   $('addForm').classList.remove('hidden');
   $('addGameBtn').classList.add('hidden');
-  addState.pick = '';
-  $('aChoose').replaceChildren();
   addMsg('');
   setTimeout(() => $('aUser').focus(), 50);
 }
@@ -487,9 +489,7 @@ async function addSubmit(ev) {
   addState.busy = true;
   $('aSubmit').disabled = true;
   addMsg('กำลังตรวจสอบ…');
-  const req = { t: 'add', card: st.acct.card, sub: st.acct.sub, u: u.slice(0, 200), p: p.slice(0, 200) };
-  if (addState.pick) req.pick = addState.pick;
-  const r = await st.lobby.request(req);
+  const r = await st.lobby.request({ t: 'add', card: st.acct.card, sub: st.acct.sub, u: u.slice(0, 200), p: p.slice(0, 200) });
   addState.busy = false;
   $('aSubmit').disabled = false;
   if (!r) { addMsg('ติดต่อผู้ไลฟ์ไม่ได้ ลองใหม่อีกครั้ง', true); return; }
@@ -497,32 +497,17 @@ async function addSubmit(ev) {
     $('aUser').value = '';
     closeAddForm();
     applyGames(r);
-    const g = st.games.find(x => x.id === r.added);
-    toast(g ? `เพิ่ม "${g.name}" แล้ว` : 'เพิ่มเกมแล้ว');
+    const ids = Array.isArray(r.added) ? r.added : [r.added];
+    const names = ids.map(id => st.games.find(x => x.id === id)).filter(Boolean).map(label);
+    toast(names.length > 1 ? `เพิ่ม ${names.length} เกมแล้ว: ${names.join(', ')}` : names.length ? `เพิ่ม "${names[0]}" แล้ว` : 'เพิ่มเกมแล้ว');
     return;
   }
   if (r.reason === 'expired') { expired(); return; }
-  if (r.reason === 'choose' && Array.isArray(r.options)) { renderChoose(r.options); return; }
   if (r.reason === 'locked') {
     addMsg(`ลองผิดหลายครั้งเกินไป — รออีก ${Math.ceil(clampInt(r.wait, 1, 86400, 900) / 60)} นาที`, true);
     return;
   }
   addMsg(Object.hasOwn(REASON_ADD, r.reason) ? REASON_ADD[r.reason] : 'เพิ่มเกมไม่สำเร็จ', true);
-}
-
-// ไอดี/รหัสเดียวกันใช้กับลูกค้าหลายรายการ → ให้เลือก (ชื่อกรองก่อนแสดง, ปุ่มสร้างด้วย DOM)
-function renderChoose(options) {
-  const box = $('aChoose');
-  box.replaceChildren();
-  addMsg('ไอดีนี้มีหลายรายการ — เลือกรายการที่ต้องการเพิ่ม');
-  for (const o of options.slice(0, 10)) {
-    const id = typeof o?.id === 'string' ? o.id.slice(0, 80) : '';
-    if (!id) continue;
-    const b = el('button', 'gate-choice', cleanText(o.name, 80, { singleLine: true }) || id);
-    b.type = 'button';
-    b.addEventListener('click', () => { addState.pick = id; $('addForm').requestSubmit(); });
-    box.appendChild(b);
-  }
 }
 
 function setupGames() {

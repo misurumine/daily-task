@@ -117,12 +117,12 @@ plaintext        = UTF-8(JSON) และต้องมี "ts" (Unix ms)
 | `hello` | — | `{ok, clientId}` Google OAuth Client ID ของร้าน (ว่าง/`ok:false` = ยังไม่เปิดล็อกอิน) |
 | `login` | `{gid}` gid = Google ID token | `{ok:true, card, sub, games, dropped}` · `{ok:false, reason: "google"\|"disabled"}` |
 | `list` | `{card, sub}` | `{ok:true, games, dropped}` · `{ok:false, reason:"expired"}` |
-| `add` | `{card, sub, u, p, pick?}` | `{ok:true, added, games, dropped}` · `{ok:false, reason}` |
+| `add` | `{card, sub, u, p}` | `{ok:true, added: [id…], games, dropped}` — ไอดี/รหัสตรงหลายรายการ (เกมต่างกัน) = เพิ่มทุกรายการ · `{ok:false, reason}` |
 | `remove` | `{card, sub, id}` | `{ok:true, games, dropped}` |
 | `logout` | `{card}` | `{ok:true}` |
 
-- **games** = `[{id, name, title, live, token, since}]` — `title` = ชื่อหน้าต่างเกม, `token` มีเฉพาะเกมที่กำลังส่งภาพ (`live:true`), `since` = เวลาเข้าไอดี (ms) · เรียง: กำลังไลฟ์ก่อน ตามเวลาเข้าไอดี (เข้าก่อนอยู่บน) → ไม่ได้ไลฟ์ ตามลำดับที่เพิ่ม · `dropped` = จำนวนเกมที่หลุดจากรายการรอบนี้ (ลูกค้าเปลี่ยนรหัส/ถูกลบ)
-- `reason` ของ add: `bad` (ไอดี/รหัสผิด), `locked` + `wait` วิ (ผิด 5 ครั้งใน 15 นาที ต่อบัญชี Google และต่อ username → พัก 15 นาที), `choose` + `options[{id,name}]` (รหัสนี้ตรงกับหลายรายการ → ส่ง `pick` ซ้ำ), `expired`
+- **games** = `[{id, name, game, title, live, token, since}]` — `game` = ชื่อเกมจากตั้งค่าสแกน (`stage1.game`, แบบเดียวกับ HUD), `title` = ชื่อหน้าต่างเกม, `token` มีเฉพาะเกมที่กำลังส่งภาพ (`live:true`), `since` = เวลาเข้าไอดี (ms) · เรียง: กำลังไลฟ์ก่อน ตามเวลาเข้าไอดี (เข้าก่อนอยู่บน) → ไม่ได้ไลฟ์ ตามลำดับที่เพิ่ม · `dropped` = จำนวนเกมที่หลุดจากรายการรอบนี้ (ลูกค้าเปลี่ยนรหัส/ถูกลบ) · ทุกครั้งที่ส่งรายการ ผู้ไลฟ์เพิ่มรายการอื่นที่ไอดี/รหัสตรงกับเกมที่เพิ่มไว้ให้เอง (แสดงคู่กัน)
+- `reason` ของ add: `bad` (ไอดี/รหัสผิด), `locked` + `wait` วิ (ผิด 5 ครั้งใน 15 นาที ต่อบัญชี Google และต่อ username → พัก 15 นาที), `expired`
 - **ฝั่งผู้ไลฟ์ตรวจ Google ID token เอง**: RS256 กับ `https://www.googleapis.com/oauth2/v3/certs`, `iss` = `accounts.google.com`, `aud` = Client ID, ยังไม่หมดอายุ
 - **บัตรผู้ชม (`card`)**: สุ่ม 32 ไบต์ base64url (43 ตัว) 1 ใบต่อเบราว์เซอร์ เก็บใน `localStorage["dt_viewer"]` `{card, sub, email}` · ฝั่งผู้ไลฟ์ (`Data/Live/viewer_cards.json` v2) เก็บแค่ SHA-256 ของบัตร + บัญชีตาม Google `sub` ที่มีรายการเกม `{cid, ลายนิ้วมือรหัส}` · ออกจากระบบ = ยกเลิกบัตรของเบราว์เซอร์นั้น (เกมยังผูกกับบัญชี Google — ล็อกอินใหม่ได้รายการเดิม) · `sub` ไม่ตรง = ใช้ไม่ได้ · ลูกค้าเปลี่ยนรหัส/ถูกลบ = เกมนั้นหลุดจากรายการ (เกมอื่นไม่กระทบ) · ไฟล์ v1 (บัตรละ 1 เกม) แปลงอัตโนมัติ
 - หน้าเว็บถาม `list` ซ้ำทุก 15 วิ (หน้ารายการ) / 30 วิ (กำลังดู) → ไลฟ์รอบใหม่ได้ token ใหม่ = ช่องนั้นต่อให้เองอัตโนมัติ · ได้ `end` ในโหมดนี้ = รอรอบถัดไป · กลับไปหน้ารายการ = ปิดทุกช่อง (คืนโควตาผู้ชม)
