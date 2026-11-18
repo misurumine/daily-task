@@ -23,6 +23,8 @@ const st = {
   signal: null, pc: null, dc: null, live: false, ended: false,
   lastStatus: 0, onlineSince: 0, noStreamerShown: false, giphyKey: '', retryTimer: null, answerTimer: null, lastSend: 0,
   quality: lsGet('dt_quality', 'source'),
+  // fps ที่อยากได้ — ผู้ไลฟ์ปัดลงให้ไม่เกิน Hz จอของตัวเอง แล้วบอกค่าจริงกลับมาใน info
+  fps: Number(lsGet('dt_fps', '30')) || 30,
 };
 
 // ---------- utils ----------
@@ -156,7 +158,7 @@ async function startPeer() {
   const dc = pc.createDataChannel('ctl', { ordered: true });
   st.dc = dc;
   dc.bufferedAmountLowThreshold = 256 * 1024;
-  dc.onopen = () => { sendCtl({ t: 'quality', q: st.quality }); setComposer(true); };
+  dc.onopen = () => { sendCtl({ t: 'quality', q: st.quality, fps: st.fps }); setComposer(true); };
   dc.onclose = () => setComposer(false);
   dc.onmessage = e => onCtl(e.data);
 
@@ -179,7 +181,7 @@ async function startPeer() {
     await pc.setLocalDescription(await pc.createOffer());
     await waitIceComplete(pc, 3000);
     if (pc !== st.pc) return;
-    await st.signal.send({ t: 'offer', vid, sdp: pc.localDescription.sdp, q: st.quality });
+    await st.signal.send({ t: 'offer', vid, sdp: pc.localDescription.sdp, q: st.quality, fps: st.fps });
     clearTimeout(st.answerTimer);
     st.answerTimer = setTimeout(() => { if (pc === st.pc && !pc.currentRemoteDescription) retryPeer(); }, 10000);
   } catch (e) {
@@ -227,6 +229,7 @@ function onCtl(raw) {
   try { m = JSON.parse(raw); } catch { return; }
   if (m.t === 'info') {
     if (m.w && m.h) $('stats').dataset.size = `${m.w}×${m.h}`;
+    renderFpsOptions(m);
   } else if (m.t === 'ack') {
     const el = pendingAcks.get(m.id);
     if (el) { el.classList.add('acked'); pendingAcks.delete(m.id); }
@@ -315,6 +318,26 @@ async function sendFile(blob, kind, name = 'image') {
   closePicker();
 }
 
+// ตัวเลือก fps มาจากผู้ไลฟ์ (fpsOptions ไม่เกิน Hz จอของผู้ไลฟ์) — ผู้ไลฟ์รุ่นเก่าไม่ส่งมา = ซ่อนไว้
+function renderFpsOptions(m) {
+  const sel = $('fps');
+  const opts = Array.isArray(m.fpsOptions) ? m.fpsOptions.map(Number).filter(n => Number.isInteger(n) && n > 0 && n <= 1000) : [];
+  if (!opts.length) { sel.classList.add('hidden'); return; }
+  const cur = Number(m.fps) || st.fps;
+  if (sel.dataset.opts !== opts.join(',')) {
+    sel.replaceChildren(...opts.map(n => {
+      const o = document.createElement('option');
+      o.value = String(n);
+      o.textContent = n + ' fps';
+      return o;
+    }));
+    sel.dataset.opts = opts.join(',');
+  }
+  sel.value = String(opts.includes(cur) ? cur : opts[opts.length - 1]);
+  sel.title = `เฟรมต่อวินาที (สูงสุด ${Number(m.maxFps) || opts[opts.length - 1]} fps ตาม Hz จอของผู้ไลฟ์)`;
+  sel.classList.remove('hidden');
+}
+
 // ---------- controls ----------
 function setupControls() {
   const vol = Number(lsGet('dt_vol', '80'));
@@ -337,6 +360,12 @@ function setupControls() {
     lsSet('dt_quality', st.quality);
     sendCtl({ t: 'quality', q: st.quality });
     toast('เปลี่ยนคุณภาพเป็น ' + e.target.selectedOptions[0].textContent);
+  });
+  $('fps').addEventListener('change', e => {
+    st.fps = Number(e.target.value) || 30;
+    lsSet('dt_fps', String(st.fps));
+    sendCtl({ t: 'quality', fps: st.fps });
+    toast('เปลี่ยนเป็น ' + st.fps + ' fps');
   });
   const fs = () => {
     const el = $('stage');

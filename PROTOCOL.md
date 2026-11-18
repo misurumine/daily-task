@@ -53,7 +53,7 @@ plaintext        = UTF-8(JSON) และต้องมี "ts" (Unix ms)
 |---|---|---|---|
 | `status` | S → ทุกคน | `live` (bool), `title`, `w`, `h`, `giphy` (คีย์ Giphy หรือ `""`) | ส่งทุก 3 วินาที; `live=false` = หน้าต่างเกมถูกย่อ/ปิด (พักไลฟ์) |
 | `end` | S → ทุกคน | – | จบไลฟ์ (ลูกค้าล็อกเอาท์) — ลิงก์นี้ใช้ไม่ได้อีก |
-| `offer` | V → S | `vid`, `sdp`, `q` | SDP offer **แบบรวบ ICE ครบแล้ว** (non-trickle) |
+| `offer` | V → S | `vid`, `sdp`, `q`, `fps` | SDP offer **แบบรวบ ICE ครบแล้ว** (non-trickle) |
 | `answer` | S → V | `to`, `sdp` | SDP answer (non-trickle) |
 | `reject` | S → V | `to`, `reason` | ปฏิเสธ (`full` = ผู้ชมเต็ม, `ended` = จบไลฟ์แล้ว) |
 | `bye` | V → S | `vid` | ผู้ชมออก |
@@ -76,7 +76,7 @@ plaintext        = UTF-8(JSON) และต้องมี "ts" (Unix ms)
 
 | t | ฟิลด์ | หมายเหตุ |
 |---|---|---|
-| `quality` | `q` = `source` \| `1080` \| `720` \| `480` \| `360` | ความสูงเป้าหมาย (คงอัตราส่วน, ไม่ขยายเกินต้นฉบับ) |
+| `quality` | `q` = `source` \| `1080` \| `720` \| `480` \| `360`, `fps` (ตัวเลข) — ส่งอย่างใดอย่างหนึ่งหรือทั้งคู่ | ความสูงเป้าหมาย (คงอัตราส่วน, ไม่ขยายเกินต้นฉบับ) / เฟรมต่อวินาที (ผู้ไลฟ์ปัดลงไม่ให้เกิน Hz จอตัวเอง) |
 | `chat` | `id`, `text` (≤ 500 ตัวอักษร) | ข้อความ/Emoji |
 | `gif` | `id`, `url`, `w`, `h` | GIF จาก Giphy — ผู้ไลฟ์ต้องรับเฉพาะ `https://media*.giphy.com/` |
 | `file-start` | `id`, `kind` (`image`\|`gif`\|`sticker`), `mime`, `size`, `name` | เริ่มส่งไฟล์ภาพ (≤ 5 MB, `image/png\|jpeg\|gif\|webp`) |
@@ -87,7 +87,7 @@ plaintext        = UTF-8(JSON) และต้องมี "ts" (Unix ms)
 
 | t | ฟิลด์ | หมายเหตุ |
 |---|---|---|
-| `info` | `w`, `h`, `q` | ขนาดวิดีโอที่ส่งจริงตอนนี้ |
+| `info` | `w`, `h`, `q`, `fps`, `maxFps`, `fpsOptions` | ขนาด/fps ที่ส่งจริงตอนนี้ · `maxFps` = Hz จอของผู้ไลฟ์ · `fpsOptions` = ตัวเลือกที่ผู้ชมเลือกได้ (ไม่มี = ผู้ไลฟ์รุ่นเก่า ล็อก 30 fps) |
 | `ack` | `id` | ได้รับและแสดงบนจอผู้ไลฟ์แล้ว (`id` ของ `chat` / `gif` / ไฟล์) |
 | `rate` | `wait` (ms) | ส่งถี่เกินไป ให้รอ |
 | `error` | `reason` | เช่น `too_large`, `bad_type` |
