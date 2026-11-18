@@ -13,13 +13,15 @@ const CHUNK = 12 * 1024;
 const OK_MIME = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const SEND_GAP_MS = 700;
 const STATUS_TIMEOUT_MS = 12000;
+// ต่อ broker ได้แล้วแต่ยังไม่เคยได้ status เลยนานเท่านี้ → บอกผู้ชมว่ายังไม่พบผู้ไลฟ์ (แต่ยังรอต่อ)
+const NO_STREAMER_MS = 20000;
 
 const vid = Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2, '0')).join('');
 const video = $('video');
 
 const st = {
   signal: null, pc: null, dc: null, live: false, ended: false,
-  lastStatus: 0, giphyKey: '', retryTimer: null, answerTimer: null, lastSend: 0,
+  lastStatus: 0, onlineSince: 0, noStreamerShown: false, giphyKey: '', retryTimer: null, answerTimer: null, lastSend: 0,
   quality: lsGet('dt_quality', 'source'),
 };
 
@@ -86,6 +88,7 @@ async function main() {
 
 function onConnState(s) {
   $('connLabel').textContent = s === 'online' ? 'เชื่อมต่อแล้ว' : s === 'connecting' ? 'กำลังเชื่อมต่อ…' : 'ขาดการเชื่อมต่อ';
+  if (s === 'online' && !st.onlineSince) st.onlineSince = Date.now();
 }
 
 function onSignal(m) {
@@ -115,7 +118,16 @@ function onSignal(m) {
 }
 
 function checkStatusTimeout() {
-  if (st.ended || !st.lastStatus) return;
+  if (st.ended) return;
+  if (!st.lastStatus) {
+    // ยังไม่เคยได้ยินผู้ไลฟ์เลย: ไลฟ์ยังไม่เริ่ม / โปรแกรมผู้ไลฟ์ปิดอยู่ / ลิงก์หมดอายุ (ล็อกเอาท์ไปตอนไม่มีใครดู)
+    if (!st.noStreamerShown && st.onlineSince && Date.now() - st.onlineSince > NO_STREAMER_MS) {
+      st.noStreamerShown = true;
+      overlay('📴', 'ยังไม่พบผู้ไลฟ์',
+        'ผู้ไลฟ์อาจยังไม่เปิดไลฟ์ หรือลิงก์นี้หมดอายุแล้ว (ลูกค้าล็อกเอาท์ไปแล้ว) · หน้านี้จะเชื่อมต่อเองเมื่อไลฟ์เริ่ม');
+    }
+    return;
+  }
   if (Date.now() - st.lastStatus > STATUS_TIMEOUT_MS) {
     setLive(false);
     overlay('📴', 'ผู้ไลฟ์ออฟไลน์', 'รอสัญญาณ… หน้านี้จะเชื่อมต่อใหม่เองเมื่อไลฟ์กลับมา');
