@@ -1,39 +1,32 @@
 // หน้าดูไลฟ์ (ผู้ชม) — Protocol v1 (ดู PROTOCOL.md)
-import { parseToken, deriveSession } from './crypto.js?v=2';
-import { Signal } from './signal.js?v=2';
-import { Lobby } from './lobby.js?v=1';
+//  • ลิงก์ Discord (#token) → ดู 1 เกม แบบเดิม
+//  • ไม่มีลิงก์ → เข้าสู่ระบบด้วย Google → รายการ "เกมของฉัน" → ดูเกมเดียว หรือหลายเกมพร้อมกัน (สูงสุด 4)
+import { parseToken } from './crypto.js?v=2';
+import { Lobby } from './lobby.js?v=2';
+import { LiveTile } from './stream.js?v=1';
 import {
-  MAX_FILE, OK_MIME, REASON_TEXT, cleanText, safeJson, safeGiphyUrl, safeGiphyKey, clampInt, sanitizeImageFile,
+  MAX_FILE, OK_MIME, REASON_TEXT, cleanText, safeJson, safeGiphyUrl, clampInt, sanitizeImageFile,
 } from './security.js?v=1';
 
 const $ = id => document.getElementById(id);
-const ICE = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-];
 const CHUNK = 12 * 1024;
 const SEND_GAP_MS = 700;
-const STATUS_TIMEOUT_MS = 12000;
-// ต่อ broker ได้แล้วแต่ยังไม่เคยได้ status เลยนานเท่านี้ → บอกผู้ชมว่ายังไม่พบผู้ไลฟ์ (แต่ยังรอต่อ)
-const NO_STREAMER_MS = 20000;
-
-const vid = Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2, '0')).join('');
-const video = $('video');
+const MAX_TILES = 4;
+const LIST_POLL_MS = 15000;
+const LIST_POLL_WATCH_MS = 30000;
 
 const st = {
-  signal: null, pc: null, dc: null, live: false, ended: false,
-  lastStatus: 0, onlineSince: 0, noStreamerShown: false, giphyKey: '', retryTimer: null, answerTimer: null, lastSend: 0,
-  quality: lsGet('dt_quality', 'source'),
-  // fps ที่อยากได้ — ผู้ไลฟ์ปัดลงให้ไม่เกิน Hz จอของตัวเอง แล้วบอกค่าจริงกลับมาใน info
-  fps: Number(lsGet('dt_fps', '30')) || 30,
-  // 'link' = เปิดจากลิงก์ Discord · 'lobby' = เข้าสู่ระบบ (บัตรผู้ชมใน localStorage)
-  mode: 'link', lobby: null, acct: null, curToken: '', resumeTimer: null,
+  mode: 'link',          // 'link' = เปิดจากลิงก์ Discord · 'lobby' = เข้าสู่ระบบ
+  lobby: null, acct: null, games: [], selected: new Set(),
+  tiles: new Map(),      // id → LiveTile
+  focus: '',             // ช่องที่ขยายอยู่ ('' = แสดงทุกช่อง)
+  view: '',              // 'list' | 'watch'
+  target: 'all',         // ปลายทางแชต: 'all' (Overall) หรือ id ของเกม
+  giphyKey: '', lastSend: 0, listTimer: null, listBusy: false,
 };
 
 // ---------- หน้าโหลด (ซากุระ) ----------
 // ความคืบหน้าเดินตามขั้นตอนจริง: 0 เปิดหน้า → 1 เชื่อมต่อ broker → 2 หาผู้ไลฟ์ → 3 ขอภาพ → เฟรมแรกขึ้นจอ = จบ
-// ไม่มีภาพให้ดู (ลิงก์ผิด/พักไลฟ์/จบ/ไม่พบผู้ไลฟ์/เต็ม) → ปิดหน้าโหลดแล้วให้กล่องข้อความบนจอวิดีโอบอกแทน
 const loader = (() => {
   const STEP_TEXT = ['กำลังเปิดหน้า…', 'กำลังเชื่อมต่อเซิร์ฟเวอร์…', 'กำลังค้นหาผู้ไลฟ์…', 'พบผู้ไลฟ์แล้ว <b>กำลังขอภาพ…</b>', 'กำลังรับภาพ…'];
   const PCT = [8, 30, 52, 74, 92];
@@ -90,9 +83,13 @@ function spawnPetals(box, count) {
 document.addEventListener('visibilitychange', () => document.body.classList.toggle('paused', document.hidden));
 
 // ---------- utils ----------
-function lsGet(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } }
-function lsSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
 const rid = () => Array.from(crypto.getRandomValues(new Uint8Array(4)), b => b.toString(16).padStart(2, '0')).join('');
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
 
 let toastTimer = null;
 function toast(text) {
@@ -103,81 +100,155 @@ function toast(text) {
   toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
 }
 
-function overlay(icon, title, sub = '') {
-  const o = $('overlay');
-  if (!icon) { o.classList.add('hidden'); return; }
-  o.classList.remove('hidden');
-  // ข้อความสถานะที่ไม่ใช่ "กำลังโหลด" (พักไลฟ์/จบ/ไม่พบ/เต็ม/ลิงก์ผิด) → ปิดหน้าโหลดให้ผู้ชมเห็นข้อความ
-  if (!['⏳', '📡'].includes(icon)) loader.skip();
-  $('overlayIcon').textContent = icon;
-  $('overlayTitle').textContent = title;
-  $('overlaySub').textContent = sub;
-}
+function setConn(text) { $('connLabel').textContent = text; }
 
-function setLive(on) {
-  st.live = on;
-  $('liveDot').classList.toggle('on', on);
-  $('liveDot').title = on ? 'กำลังไลฟ์' : 'ไม่ได้ไลฟ์อยู่';
-}
-
-function setComposer(enabled) {
-  for (const id of ['msgInput', 'sendBtn', 'pickerBtn', 'imageBtn']) $(id).disabled = !enabled;
-  $('msgInput').placeholder = enabled ? 'พิมพ์ข้อความ…' : 'รอเชื่อมต่อไลฟ์ก่อนจึงจะส่งข้อความได้';
-}
-
-// ---------- signaling ----------
+// ---------- เริ่มหน้า ----------
 async function main() {
   loader.step(0);
   spawnPetals($('splashPetals'), 26);
   spawnPetals($('petals'), 14);
   // กันค้างหน้าโหลด (เช่น เน็ตต่อ broker ไม่ได้เลย) — 25 วิแล้วให้กล่องสถานะบนจอวิดีโอบอกแทน
   setTimeout(() => loader.skip(), 25000);
-  setComposer(false);
-  setupControls();
   setupChat();
   setupGate();
+  setupGames();
+  updateComposer();
   // เปิดลิงก์ใหม่ในแท็บเดิม (เปลี่ยนแค่ #token) เบราว์เซอร์ไม่โหลดหน้าใหม่ → โหลดใหม่เองให้ใช้ลิงก์ใหม่
   window.addEventListener('hashchange', () => { if (parseToken(location.hash)) location.reload(); });
+  window.addEventListener('pagehide', () => { for (const t of st.tiles.values()) t.bye(); });
   if (!window.mqtt || !crypto.subtle) {
-    overlay('⚠️', 'เบราว์เซอร์นี้ไม่รองรับ', 'ลองเปิดด้วย Chrome, Edge หรือ Safari เวอร์ชันล่าสุด');
+    loader.skip();
+    showView('watch');
+    const t = addTile({ id: 'link', name: '' }, false);
+    t.setOverlay('⚠️', 'เบราว์เซอร์นี้ไม่รองรับ', 'ลองเปิดด้วย Chrome, Edge หรือ Safari เวอร์ชันล่าสุด');
     return;
   }
-  setInterval(checkStatusTimeout, 2000);
-  window.addEventListener('pagehide', () => { st.signal?.send({ t: 'bye', vid }); });
 
   const token = parseToken(location.hash);
   if (token) {
     // เปิดจากลิงก์ Discord (แบบเดิม) — ซ่อน token ออกจากแถบที่อยู่ กันติดภาพหน้าจอ/แชร์ต่อโดยไม่ตั้งใจ
     history.replaceState(null, '', location.pathname);
-    await connectToken(token);
+    showView('watch');
+    const t = addTile({ id: 'link', name: '' }, false);
+    await t.start(token);
     return;
   }
-  // ไม่มีลิงก์ → เข้าสู่ระบบ (Google + ไอดี/รหัสเกม) แล้วรับ token ไลฟ์ของลูกค้าจากโปรแกรมผู้ไลฟ์
   st.mode = 'lobby';
+  st.lobby = new Lobby();
   await lobbyStart();
 }
 
-// ต่อไลฟ์ด้วย token (ใช้ทั้งลิงก์ Discord และหลังเข้าสู่ระบบ) — เรียกซ้ำได้: ทิ้งการเชื่อมต่อเดิมก่อน
-async function connectToken(tokenBytes) {
-  closePeer();
-  clearTimeout(st.retryTimer);
-  st.signal?.stop();
-  Object.assign(st, { signal: null, ended: false, lastStatus: 0, onlineSince: 0, noStreamerShown: false });
-  const session = await deriveSession(tokenBytes);
-  loader.step(1);
-  overlay('⏳', 'กำลังเชื่อมต่อ…', 'รอสัญญาณจากผู้ไลฟ์');
-  st.signal = new Signal(session, onSignal, onConnState);
-  st.signal.start();
+// ---------- มุมมอง ----------
+function showView(v) {
+  st.view = v;
+  $('games').classList.toggle('hidden', v !== 'list');
+  $('watch').classList.toggle('hidden', v !== 'watch');
+  $('layout').classList.toggle('list-mode', v === 'list');
+  $('backBtn').classList.toggle('hidden', st.mode !== 'lobby');
+  document.querySelector('.watch-bar').classList.toggle('hidden', st.mode !== 'lobby');
+  if (v === 'list') {
+    $('streamTitle').textContent = 'Daily Task Live';
+    document.title = 'Daily Task Live';
+    setBadge(st.games.some(g => g.live));
+    if (st.acct) setConn('เข้าสู่ระบบแล้ว');
+  }
+  updateComposer();
+}
+
+function setBadge(on) {
+  $('liveDot').classList.toggle('on', !!on);
+  $('liveDot').title = on ? 'กำลังไลฟ์' : 'ไม่ได้ไลฟ์อยู่';
+}
+
+// ---------- ช่องดูไลฟ์ ----------
+function addTile(game, closable) {
+  const tile = new LiveTile({ id: game.id, name: game.name, mode: st.mode, closable }, {
+    toast,
+    onStep: (t, n) => { if (st.tiles.size === 1 || n <= 2) loader.step(n); },
+    onFirstFrame: () => loader.done(),
+    onStatus: (t, m) => {
+      if (typeof m.giphy === 'string' && m.giphy !== st.giphyKey) updateGiphy(m.giphy);
+      if (st.mode === 'link' && t.title) { $('streamTitle').textContent = t.title; document.title = t.title + ' · Daily Task Live'; }
+      if (st.mode === 'lobby' && t.title && !t.name) t.setName(t.title);
+    },
+    onState: () => { refreshWatchHeader(); updateComposer(); },
+    onCtl: onCtl,
+    onEnd: t => {
+      if (st.mode === 'link') { setConn('จบไลฟ์'); loader.skip(); }
+      else scheduleList(3000);
+      refreshWatchHeader();
+    },
+    onClose: t => closeTile(t.id),
+    onExpand: t => setFocus(st.focus === t.id ? '' : t.id),
+  });
+  // หน้าโหลดปิดเมื่อมีข้อความสถานะที่ไม่ใช่ "กำลังโหลด" (เช่น พัก/ไม่พบ/จบ)
+  const origOverlay = tile.setOverlay.bind(tile);
+  tile.setOverlay = (icon, title, sub) => { origOverlay(icon, title, sub); if (icon && !['⏳', '📡'].includes(icon)) loader.skip(); };
+  st.tiles.set(game.id, tile);
+  $('grid').appendChild(tile.el);
+  layoutGrid();
+  refreshTargets();
+  return tile;
+}
+
+function closeTile(id) {
+  const t = st.tiles.get(id);
+  if (!t) return;
+  t.destroy();
+  st.tiles.delete(id);
+  if (st.focus === id) st.focus = '';
+  layoutGrid();
+  refreshTargets();
+  updateComposer();
+  if (!st.tiles.size && st.mode === 'lobby') showList();
+}
+
+function closeAllTiles() {
+  for (const id of [...st.tiles.keys()]) {
+    st.tiles.get(id).destroy();
+    st.tiles.delete(id);
+  }
+  st.focus = '';
+  layoutGrid();
+  refreshTargets();
+}
+
+function setFocus(id) {
+  st.focus = st.tiles.has(id) ? id : '';
+  layoutGrid();
+}
+
+function layoutGrid() {
+  const g = $('grid');
+  const n = st.tiles.size;
+  g.dataset.n = String(st.focus ? 1 : Math.max(1, n));
+  g.classList.toggle('focused', !!st.focus);
+  for (const [id, t] of st.tiles) {
+    t.el.classList.toggle('focus', id === st.focus);
+    t.expandBtn.classList.toggle('hidden', n < 2);
+    t.expandBtn.textContent = id === st.focus ? '⤡' : '⤢';
+  }
+  refreshWatchHeader();
+}
+
+function refreshWatchHeader() {
+  const tiles = [...st.tiles.values()];
+  const live = tiles.filter(t => t.live).length;
+  if (st.mode === 'lobby' && st.view === 'watch') {
+    $('watchCount').textContent = tiles.length > 1 ? `กำลังดู ${tiles.length} เกม · ไลฟ์อยู่ ${live}` : '';
+    $('streamTitle').textContent = tiles.length === 1 ? (tiles[0].name || tiles[0].title || 'Daily Task Live') : 'Daily Task Live';
+    document.title = $('streamTitle').textContent + (tiles.length === 1 ? ' · Daily Task Live' : '');
+  }
+  if (st.view === 'watch') setBadge(live > 0);
+  const anyOnline = tiles.some(t => t.connState === 'online');
+  if (st.view === 'watch' && tiles.length) {
+    if (tiles.every(t => t.ended) && st.mode === 'link') setConn('จบไลฟ์');
+    else setConn(anyOnline ? 'เชื่อมต่อแล้ว' : 'กำลังเชื่อมต่อ…');
+  }
 }
 
 // ---------- เข้าสู่ระบบ (lobby — PROTOCOL.md §7) ----------
 const ACCT_KEY = 'dt_viewer';
-const REASON_LOGIN = {
-  bad: 'ไอดีหรือรหัสผ่านไม่ถูกต้อง',
-  offline: 'ไอดีนี้ยังไม่ได้เริ่มงาน — ยังไม่มีไลฟ์ให้ดูตอนนี้ ลองใหม่เมื่อเริ่มงาน',
-  google: 'ยืนยันบัญชี Google ไม่สำเร็จ ลองกดเข้าสู่ระบบด้วย Google ใหม่',
-  disabled: 'ร้านยังไม่เปิดการเข้าสู่ระบบ — กรุณาใช้ลิงก์จาก Discord',
-};
 
 function acctLoad() {
   try {
@@ -186,80 +257,43 @@ function acctLoad() {
   } catch {}
   return null;
 }
-function acctSave(a) { try { localStorage.setItem(ACCT_KEY, JSON.stringify(a)); } catch {} }
+function acctSave(a) { try { localStorage.setItem(ACCT_KEY, JSON.stringify({ card: a.card, sub: a.sub, email: a.email || '' })); } catch {} }
 function acctClear() { try { localStorage.removeItem(ACCT_KEY); } catch {} }
 
 async function lobbyStart() {
-  st.lobby = new Lobby();
   const acct = acctLoad();
   if (acct) {
     st.acct = acct;
     showAccount();
     loader.step(1);
-    const ok = await resumeOnce(true);
-    if (ok) { scheduleResume(); return; }
+    const r = await st.lobby.request({ t: 'list', card: acct.card, sub: acct.sub });
+    if (r && r.ok) { applyGames(r); loader.skip(); showList(); return; }
+    if (!r) {
+      // ร้านไม่ตอบ (โปรแกรมปิด/เน็ตหลุด) — เก็บบัตรไว้ แสดงรายการว่าง ลองใหม่เป็นระยะ
+      loader.skip();
+      showList();
+      listMsg('ยังติดต่อผู้ไลฟ์ไม่ได้ — โปรแกรมของผู้ไลฟ์อาจปิดอยู่ · หน้านี้จะลองใหม่เองอัตโนมัติ');
+      scheduleList();
+      return;
+    }
+    expired();
+    return;
   }
   await showGate();
 }
 
-// ใช้บัตรผู้ชมที่จำไว้ — คืน true ถ้าบัตรยังใช้ได้ (ไม่ว่าจะกำลังไลฟ์หรือไม่)
-async function resumeOnce(first = false) {
-  if (!st.acct) return false;
-  const r = await st.lobby.request({ t: 'resume', card: st.acct.card, sub: st.acct.sub });
-  if (!st.acct) return false;
-  if (!r) {
-    // ร้านไม่ตอบ (โปรแกรมปิด/เน็ตหลุด) — เก็บบัตรไว้ ลองใหม่รอบหน้า
-    if (first || !st.curToken) {
-      setLive(false);
-      overlay('📴', 'ยังติดต่อผู้ไลฟ์ไม่ได้', 'โปรแกรมของผู้ไลฟ์อาจปิดอยู่ · หน้านี้จะลองใหม่เองอัตโนมัติ');
-      $('connLabel').textContent = 'รอผู้ไลฟ์…';
-    }
-    return true;
-  }
-  if (!r.ok) {
-    acctClear();
-    st.acct = null;
-    hideAccount();
-    closePeer();
-    st.signal?.stop();
-    st.signal = null;
-    st.curToken = '';
-    toast('การเข้าสู่ระบบหมดอายุ (เปลี่ยนรหัส/ออกจากระบบ) — กรุณาเข้าสู่ระบบใหม่');
-    await showGate();
-    return false;
-  }
-  applyWatch(r);
-  return true;
-}
-
-function applyWatch(r) {
-  const name = cleanText(r.name, 80, { singleLine: true });
-  if (name && st.acct) { st.acct.name = name; acctSave(st.acct); $('acctName').textContent = name; }
-  const tok = typeof r.token === 'string' ? r.token : '';
-  if (tok && tok !== st.curToken) {
-    const bytes = parseToken(tok);
-    if (bytes) { st.curToken = tok; connectToken(bytes); }
-  } else if (!tok && !st.signal) {
-    setLive(false);
-    overlay('🌙', 'ยังไม่มีไลฟ์ตอนนี้', 'ไลฟ์จะเริ่มเมื่อเริ่มงานของไอดีนี้ · หน้านี้จะเชื่อมต่อให้เองอัตโนมัติ');
-    $('connLabel').textContent = 'รอไลฟ์…';
-  }
-}
-
-// ถามร้านเป็นระยะ: ไลฟ์รอบใหม่ (token ใหม่) / บัตรถูกยกเลิก — ถี่ตอนรอ ห่างตอนกำลังดู
-function scheduleResume() {
-  clearTimeout(st.resumeTimer);
-  if (!st.acct) return;
-  const watching = st.signal && st.lastStatus && Date.now() - st.lastStatus < 15000;
-  st.resumeTimer = setTimeout(async () => {
-    if (document.hidden && st.signal) { scheduleResume(); return; }
-    if (await resumeOnce()) scheduleResume();
-  }, watching ? 60000 : 15000);
+function expired() {
+  acctClear();
+  st.acct = null;
+  hideAccount();
+  closeAllTiles();
+  toast('การเข้าสู่ระบบหมดอายุ — กรุณาเข้าสู่ระบบใหม่');
+  showGate();
 }
 
 function showAccount() {
   $('acct').classList.remove('hidden');
-  $('acctName').textContent = st.acct?.name || st.acct?.email || 'เข้าสู่ระบบแล้ว';
+  $('acctName').textContent = st.acct?.email || 'เข้าสู่ระบบแล้ว';
   $('acctName').title = st.acct?.email || '';
 }
 function hideAccount() { $('acct').classList.add('hidden'); }
@@ -268,31 +302,267 @@ async function logout() {
   const a = st.acct;
   acctClear();
   st.acct = null;
-  clearTimeout(st.resumeTimer);
-  if (a) st.lobby?.request({ t: 'logout', card: a.card });
+  clearTimeout(st.listTimer);
+  closeAllTiles();
+  if (a) await Promise.race([st.lobby?.request({ t: 'logout', card: a.card }), new Promise(r => setTimeout(r, 1500))]);
   try { window.google?.accounts?.id?.disableAutoSelect(); } catch {}
-  setTimeout(() => location.reload(), 400);
+  location.reload();
 }
 
-// ---------- หน้าเข้าสู่ระบบ ----------
-const gate = { clientId: '', cred: '', sub: '', email: '', pick: '', busy: false };
+// ---------- รายการเกม ----------
+function cleanGame(g) {
+  const id = typeof g?.id === 'string' ? g.id.slice(0, 80) : '';
+  if (!id) return null;
+  const tok = typeof g.token === 'string' && parseToken(g.token) ? g.token : '';
+  return {
+    id,
+    name: cleanText(g.name, 80, { singleLine: true }) || id,
+    title: cleanText(g.title, 120, { singleLine: true }),
+    live: !!g.live && !!tok,
+    token: tok,
+    since: clampInt(g.since, 0, 1e14, 0),
+  };
+}
+
+function applyGames(r) {
+  st.games = (Array.isArray(r.games) ? r.games.slice(0, 50) : []).map(cleanGame).filter(Boolean);
+  if (clampInt(r.dropped, 0, 100, 0) > 0) toast('บางเกมถูกนำออกจากรายการ (รหัสเปลี่ยน/ลูกค้าถูกลบ) — เพิ่มใหม่ได้ด้วยไอดี/รหัสล่าสุด');
+  for (const id of [...st.selected]) {
+    const g = st.games.find(x => x.id === id);
+    if (!g || !g.live) st.selected.delete(id);
+  }
+  // ช่องที่เปิดดูอยู่: ไลฟ์รอบใหม่ (token ใหม่) → ต่อใหม่ · เกมหลุดจากรายการ → ปิดช่อง
+  for (const [id, t] of st.tiles) {
+    const g = st.games.find(x => x.id === id);
+    if (!g) { closeTile(id); continue; }
+    t.setName(g.name);
+    if (g.token && g.token !== t.token) t.start(g.token);
+    else if (!g.token && !t.signal && !t.ended) t.waitOffline();
+  }
+  renderGames();
+}
+
+function listMsg(text) { $('gamesMsg').textContent = text || ''; }
+
+function renderGames() {
+  const box = $('gameList');
+  box.replaceChildren();
+  listMsg('');
+  if (!st.games.length) {
+    const e = el('div', 'games-empty');
+    e.append(el('div', 'games-empty-icon', '🎮'), el('div', 'games-empty-title', 'ยังไม่มีเกมในรายการ'),
+      el('div', 'games-empty-sub', 'กด "＋ เพิ่มเกม" แล้วกรอกไอดี/รหัสเกมที่ให้ร้านไว้ — เพิ่มครั้งเดียว ระบบจำไว้กับบัญชี Google นี้'));
+    box.appendChild(e);
+  }
+  for (const g of st.games) {
+    const card = el('div', 'game-card' + (g.live ? ' live' : ''));
+    const pick = el('input', 'game-pick');
+    pick.type = 'checkbox';
+    pick.checked = st.selected.has(g.id);
+    pick.disabled = !g.live || (!pick.checked && st.selected.size >= MAX_TILES);
+    pick.title = g.live ? 'เลือกเพื่อดูพร้อมกันหลายเกม' : 'เกมนี้ยังไม่ได้ไลฟ์';
+    pick.setAttribute('aria-label', 'เลือก ' + g.name);
+    pick.addEventListener('change', () => {
+      if (pick.checked) {
+        if (st.selected.size >= MAX_TILES) { pick.checked = false; toast(`ดูพร้อมกันได้สูงสุด ${MAX_TILES} เกม`); return; }
+        st.selected.add(g.id);
+      } else st.selected.delete(g.id);
+      renderGames();
+    });
+    const info = el('div', 'game-info');
+    info.append(el('div', 'game-name', g.name));
+    if (g.title) info.append(el('div', 'game-title', g.title));
+    const status = el('div', 'game-status');
+    if (g.live) {
+      const since = g.since ? new Date(g.since).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : '';
+      status.textContent = '🟢 กำลังไลฟ์' + (since ? ` · เข้าไอดีตั้งแต่ ${since} น.` : '');
+    } else status.textContent = '🌙 ไม่ได้ไลฟ์';
+    info.append(status);
+    const actions = el('div', 'game-actions');
+    const watch = el('button', 'send-btn game-watch', '▶ ดู');
+    watch.type = 'button';
+    watch.disabled = !g.live;
+    watch.addEventListener('click', () => watchGames([g.id]));
+    const del = el('button', 'game-del', '🗑');
+    del.type = 'button';
+    del.title = 'เอาเกมนี้ออกจากรายการ';
+    del.addEventListener('click', () => removeGame(g));
+    actions.append(watch, del);
+    card.append(pick, info, actions);
+    box.appendChild(card);
+  }
+  const n = st.selected.size;
+  $('watchSelBtn').disabled = n === 0;
+  $('watchSelBtn').textContent = n > 1 ? `▶ ดูพร้อมกัน ${n} เกม` : n === 1 ? '▶ ดูเกมที่เลือก' : '▶ ดูพร้อมกัน';
+  if (st.view === 'list') setBadge(st.games.some(g => g.live));
+}
+
+async function refreshList() {
+  if (!st.acct || st.listBusy) return;
+  st.listBusy = true;
+  const r = await st.lobby.request({ t: 'list', card: st.acct.card, sub: st.acct.sub });
+  st.listBusy = false;
+  if (!st.acct) return;
+  if (!r) { if (st.view === 'list') listMsg('ยังติดต่อผู้ไลฟ์ไม่ได้ — จะลองใหม่เองอัตโนมัติ'); return; }
+  if (!r.ok) { expired(); return; }
+  applyGames(r);
+}
+
+function scheduleList(delay) {
+  clearTimeout(st.listTimer);
+  if (!st.acct) return;
+  st.listTimer = setTimeout(async () => {
+    if (!(document.hidden && st.view === 'list')) await refreshList();
+    scheduleList();
+  }, delay ?? (st.view === 'watch' ? LIST_POLL_WATCH_MS : LIST_POLL_MS));
+}
+
+function showList() {
+  showView('list');
+  renderGames();
+  if (!st.games.length) openAddForm();
+  scheduleList();
+}
+
+function watchGames(ids) {
+  const games = ids.map(id => st.games.find(g => g.id === id)).filter(g => g && g.live).slice(0, MAX_TILES);
+  if (!games.length) { toast('เกมที่เลือกยังไม่ได้ไลฟ์'); return; }
+  // เปิดช่องตามลำดับในรายการ (เข้าไอดีก่อน = ช่องแรก) · ช่องที่เปิดอยู่แล้วแต่ไม่ได้เลือก → ปิด
+  for (const id of [...st.tiles.keys()]) if (!games.some(g => g.id === id)) closeTile(id);
+  for (const g of games) {
+    let t = st.tiles.get(g.id);
+    if (!t) { t = addTile(g, true); t.start(g.token); }
+    else $('grid').appendChild(t.el);
+  }
+  st.focus = '';
+  layoutGrid();
+  st.target = games.length > 1 ? 'all' : games[0].id;
+  refreshTargets();
+  showView('watch');
+  scheduleList();
+}
+
+async function removeGame(g) {
+  if (!confirm(`เอา "${g.name}" ออกจากรายการ?\n(เพิ่มกลับได้ด้วยไอดี/รหัสเกม)`)) return;
+  const r = await st.lobby.request({ t: 'remove', card: st.acct.card, sub: st.acct.sub, id: g.id });
+  if (!r) { toast('ติดต่อผู้ไลฟ์ไม่ได้ ลองใหม่อีกครั้ง'); return; }
+  if (!r.ok) { expired(); return; }
+  st.selected.delete(g.id);
+  applyGames(r);
+  toast('เอาออกจากรายการแล้ว');
+}
+
+// ---------- เพิ่มเกม ----------
+const addState = { pick: '', busy: false };
+const REASON_ADD = {
+  bad: 'ไอดีหรือรหัสผ่านไม่ถูกต้อง',
+  expired: 'การเข้าสู่ระบบหมดอายุ',
+};
+
+function openAddForm() {
+  $('addForm').classList.remove('hidden');
+  $('addGameBtn').classList.add('hidden');
+  addState.pick = '';
+  $('aChoose').replaceChildren();
+  addMsg('');
+  setTimeout(() => $('aUser').focus(), 50);
+}
+function closeAddForm() {
+  $('addForm').classList.add('hidden');
+  $('addGameBtn').classList.remove('hidden');
+  $('aPass').value = '';
+}
+function addMsg(text, isErr = false) {
+  const m = $('aMsg');
+  m.textContent = text;
+  m.classList.toggle('err', isErr);
+}
+
+async function addSubmit(ev) {
+  ev.preventDefault();
+  if (addState.busy || !st.acct) return;
+  const u = $('aUser').value.trim();
+  const p = $('aPass').value;
+  if (!u || !p) { addMsg('กรอกไอดีและรหัสผ่านให้ครบ', true); return; }
+  addState.busy = true;
+  $('aSubmit').disabled = true;
+  addMsg('กำลังตรวจสอบ…');
+  const req = { t: 'add', card: st.acct.card, sub: st.acct.sub, u: u.slice(0, 200), p: p.slice(0, 200) };
+  if (addState.pick) req.pick = addState.pick;
+  const r = await st.lobby.request(req);
+  addState.busy = false;
+  $('aSubmit').disabled = false;
+  if (!r) { addMsg('ติดต่อผู้ไลฟ์ไม่ได้ ลองใหม่อีกครั้ง', true); return; }
+  if (r.ok) {
+    $('aUser').value = '';
+    closeAddForm();
+    applyGames(r);
+    const g = st.games.find(x => x.id === r.added);
+    toast(g ? `เพิ่ม "${g.name}" แล้ว` : 'เพิ่มเกมแล้ว');
+    return;
+  }
+  if (r.reason === 'expired') { expired(); return; }
+  if (r.reason === 'choose' && Array.isArray(r.options)) { renderChoose(r.options); return; }
+  if (r.reason === 'locked') {
+    addMsg(`ลองผิดหลายครั้งเกินไป — รออีก ${Math.ceil(clampInt(r.wait, 1, 86400, 900) / 60)} นาที`, true);
+    return;
+  }
+  addMsg(Object.hasOwn(REASON_ADD, r.reason) ? REASON_ADD[r.reason] : 'เพิ่มเกมไม่สำเร็จ', true);
+}
+
+// ไอดี/รหัสเดียวกันใช้กับลูกค้าหลายรายการ → ให้เลือก (ชื่อกรองก่อนแสดง, ปุ่มสร้างด้วย DOM)
+function renderChoose(options) {
+  const box = $('aChoose');
+  box.replaceChildren();
+  addMsg('ไอดีนี้มีหลายรายการ — เลือกรายการที่ต้องการเพิ่ม');
+  for (const o of options.slice(0, 10)) {
+    const id = typeof o?.id === 'string' ? o.id.slice(0, 80) : '';
+    if (!id) continue;
+    const b = el('button', 'gate-choice', cleanText(o.name, 80, { singleLine: true }) || id);
+    b.type = 'button';
+    b.addEventListener('click', () => { addState.pick = id; $('addForm').requestSubmit(); });
+    box.appendChild(b);
+  }
+}
+
+function setupGames() {
+  $('addGameBtn').addEventListener('click', openAddForm);
+  $('aCancel').addEventListener('click', closeAddForm);
+  $('addForm').addEventListener('submit', addSubmit);
+  $('aShowPass').addEventListener('click', () => {
+    const inp = $('aPass');
+    inp.type = inp.type === 'password' ? 'text' : 'password';
+    $('aShowPass').textContent = inp.type === 'password' ? '👁' : '🙈';
+  });
+  $('watchSelBtn').addEventListener('click', () => watchGames([...st.selected]));
+  $('refreshBtn').addEventListener('click', async () => { $('refreshBtn').disabled = true; await refreshList(); $('refreshBtn').disabled = false; });
+  $('backBtn').addEventListener('click', () => {
+    // กลับไปหน้ารายการ = เลิกดูทุกช่อง (ไม่กินโควตาผู้ชม/เน็ตของผู้ไลฟ์)
+    for (const id of st.tiles.keys()) if (!st.selected.has(id)) st.selected.add(id);
+    closeAllTiles();
+    showList();
+    refreshList();
+  });
+  $('logoutBtn').addEventListener('click', logout);
+}
+
+// ---------- หน้าเข้าสู่ระบบ (Google) ----------
+const gate = { busy: false };
 
 async function showGate() {
   loader.skip();
-  setLive(false);
-  overlay('🔐', 'เข้าสู่ระบบเพื่อดูไลฟ์', 'ยืนยันด้วย Google แล้วกรอกไอดี/รหัสเกมของคุณ');
-  $('connLabel').textContent = 'ยังไม่ได้เข้าสู่ระบบ';
+  showView('list');
+  $('games').classList.add('hidden');
+  setConn('ยังไม่ได้เข้าสู่ระบบ');
   $('gate').classList.remove('hidden');
-  gateStep(1);
   gateMsg('กำลังติดต่อผู้ไลฟ์…');
   const hello = await st.lobby.request({ t: 'hello' });
   if (!hello) { gateMsg('ติดต่อผู้ไลฟ์ไม่ได้ — โปรแกรมของผู้ไลฟ์อาจปิดอยู่ ลองรีเฟรชหน้านี้ภายหลัง', true); return; }
   const cid = typeof hello.clientId === 'string' ? hello.clientId : '';
   if (!hello.ok || !/^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/.test(cid)) {
-    gateMsg(REASON_LOGIN.disabled, true);
+    gateMsg('ร้านยังไม่เปิดการเข้าสู่ระบบ — กรุณาใช้ลิงก์จาก Discord', true);
     return;
   }
-  gate.clientId = cid;
   gateMsg('');
   try { await loadGoogle(); } catch { gateMsg('โหลดปุ่ม Google ไม่สำเร็จ — ตรวจสอบอินเทอร์เน็ตแล้วรีเฟรชหน้า', true); return; }
   window.google.accounts.id.initialize({
@@ -316,7 +586,7 @@ function loadGoogle() {
   });
 }
 
-// อ่าน sub/email จาก ID token เพื่อแสดงผลเท่านั้น — ตัวตรวจลายเซ็นจริงคือโปรแกรมผู้ไลฟ์
+// อ่าน email จาก ID token เพื่อแสดงผลเท่านั้น — ตัวตรวจลายเซ็นจริงคือโปรแกรมผู้ไลฟ์
 function jwtClaims(jwt) {
   try {
     const part = String(jwt).split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
@@ -325,314 +595,113 @@ function jwtClaims(jwt) {
   } catch { return null; }
 }
 
-function onGoogle(resp) {
+async function onGoogle(resp) {
+  if (gate.busy) return;
   const c = jwtClaims(resp?.credential);
-  if (!c || typeof c.sub !== 'string' || !c.sub) { gateMsg(REASON_LOGIN.google, true); return; }
-  gate.cred = resp.credential;
-  gate.sub = c.sub;
-  gate.email = cleanText(c.email, 120, { singleLine: true });
-  gate.pick = '';
-  $('gEmail').textContent = gate.email || 'บัญชี Google';
-  gateStep(2);
-  gateMsg('');
-  $('gUser').focus();
-}
-
-function gateStep(n) {
-  $('gStep1').classList.toggle('done', n > 1);
-  $('gStep2').classList.toggle('locked', n < 2);
-  $('gSigned').classList.toggle('hidden', n < 2);
-  $('gBtnWrap').classList.toggle('hidden', n >= 2);
-  for (const id of ['gUser', 'gPass', 'gSubmit']) $(id).disabled = n < 2;
-  $('gChoose').replaceChildren();
+  if (!c || typeof c.sub !== 'string') { gateMsg('ยืนยันบัญชี Google ไม่สำเร็จ ลองใหม่อีกครั้ง', true); return; }
+  gate.busy = true;
+  gateMsg('กำลังตรวจสอบบัญชี Google…');
+  const r = await st.lobby.request({ t: 'login', gid: resp.credential });
+  gate.busy = false;
+  if (!r) { gateMsg('ติดต่อผู้ไลฟ์ไม่ได้ ลองใหม่อีกครั้ง', true); return; }
+  if (!r.ok || !/^[A-Za-z0-9_-]{43}$/.test(r.card) || typeof r.sub !== 'string') {
+    gateMsg(r.reason === 'disabled' ? 'ร้านยังไม่เปิดการเข้าสู่ระบบ — กรุณาใช้ลิงก์จาก Discord'
+      : 'ยืนยันบัญชี Google ไม่สำเร็จ ลองกดเข้าสู่ระบบด้วย Google ใหม่', true);
+    return;
+  }
+  st.acct = { card: r.card, sub: r.sub, email: cleanText(c.email, 120, { singleLine: true }) };
+  acctSave(st.acct);
+  $('gate').classList.add('hidden');
+  showAccount();
+  applyGames(r);
+  showList();
 }
 
 function gateMsg(text, isErr = false) {
-  const el = $('gMsg');
-  el.textContent = text;
-  el.classList.toggle('err', isErr);
+  const m = $('gMsg');
+  m.textContent = text;
+  m.classList.toggle('err', isErr);
 }
 
-async function gateSubmit(ev) {
-  ev.preventDefault();
-  if (gate.busy || !gate.cred) return;
-  const u = $('gUser').value.trim();
-  const p = $('gPass').value;
-  if (!u || !p) { gateMsg('กรอกไอดีและรหัสผ่านให้ครบ', true); return; }
-  gate.busy = true;
-  $('gSubmit').disabled = true;
-  gateMsg('กำลังตรวจสอบ…');
-  const req = { t: 'login', gid: gate.cred, u: u.slice(0, 200), p: p.slice(0, 200) };
-  if (gate.pick) req.pick = gate.pick;
-  const r = await st.lobby.request(req);
-  gate.busy = false;
-  $('gSubmit').disabled = false;
-  if (!r) { gateMsg('ติดต่อผู้ไลฟ์ไม่ได้ ลองใหม่อีกครั้ง', true); return; }
-  if (r.ok && /^[A-Za-z0-9_-]{43}$/.test(r.card)) {
-    $('gPass').value = '';
-    st.acct = { card: r.card, sub: gate.sub, email: gate.email, name: cleanText(r.name, 80, { singleLine: true }) };
-    acctSave(st.acct);
-    $('gate').classList.add('hidden');
-    showAccount();
-    applyWatch(r);
-    scheduleResume();
-    return;
-  }
-  if (r.reason === 'choose' && Array.isArray(r.options)) { renderChoose(r.options); return; }
-  if (r.reason === 'locked') {
-    gateMsg(`ลองผิดหลายครั้งเกินไป — รออีก ${Math.ceil(clampInt(r.wait, 1, 86400, 900) / 60)} นาที`, true);
-    return;
-  }
-  if (r.reason === 'google') { gateStep(1); gate.cred = ''; }
-  gateMsg(Object.hasOwn(REASON_LOGIN, r.reason) ? REASON_LOGIN[r.reason] : 'เข้าสู่ระบบไม่สำเร็จ', true);
-}
+function setupGate() { /* ปุ่ม Google สร้างตอนแสดงหน้าเข้าสู่ระบบ */ }
 
-// ไอดี/รหัสเดียวกันใช้กับลูกค้าหลายรายการที่กำลังไลฟ์ → ให้เลือก (ชื่อกรองก่อนแสดง, ปุ่มสร้างด้วย DOM)
-function renderChoose(options) {
-  const box = $('gChoose');
-  box.replaceChildren();
-  gateMsg('ไอดีนี้มีหลายรายการ — เลือกรายการที่ต้องการดู');
-  for (const o of options.slice(0, 10)) {
-    const id = typeof o?.id === 'string' ? o.id.slice(0, 80) : '';
-    if (!id) continue;
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'gate-choice';
-    b.textContent = cleanText(o.name, 80, { singleLine: true }) || id;
-    b.addEventListener('click', () => { gate.pick = id; $('gStep2').requestSubmit(); });
-    box.appendChild(b);
-  }
-}
-
-function setupGate() {
-  $('gStep2').addEventListener('submit', gateSubmit);
-  $('gSwitch').addEventListener('click', () => {
-    gate.cred = ''; gate.sub = ''; gate.email = ''; gate.pick = '';
-    try { window.google?.accounts?.id?.disableAutoSelect(); } catch {}
-    gateStep(1);
-    gateMsg('');
-  });
-  $('gShowPass').addEventListener('click', () => {
-    const inp = $('gPass');
-    inp.type = inp.type === 'password' ? 'text' : 'password';
-    $('gShowPass').textContent = inp.type === 'password' ? '👁' : '🙈';
-  });
-  $('logoutBtn').addEventListener('click', logout);
-}
-
-function onConnState(s) {
-  $('connLabel').textContent = s === 'online' ? 'เชื่อมต่อแล้ว' : s === 'connecting' ? 'กำลังเชื่อมต่อ…' : 'ขาดการเชื่อมต่อ';
-  if (s === 'online' && !st.onlineSince) st.onlineSince = Date.now();
-  if (s === 'online') loader.step(2);
-}
-
-function onSignal(m) {
-  if (st.ended) return;
-  if (m.t === 'status') {
-    st.lastStatus = Date.now();
-    const title = cleanText(m.title, 120, { singleLine: true });   // ชื่อหน้าต่างเกม — กรองก่อนแสดงเสมอ
-    if (title) { $('streamTitle').textContent = title; document.title = title + ' · Daily Task Live'; }
-    if (typeof m.giphy === 'string') updateGiphy(safeGiphyKey(m.giphy));
-    setLive(!!m.live);
-    if (m.live) {
-      if (!st.pc) startPeer();
-      else if (st.pc.connectionState === 'connected') overlay(null);
-    } else {
-      overlay('⏸️', 'พักไลฟ์ชั่วคราว', 'หน้าต่างเกมของผู้ไลฟ์ถูกย่อหรือปิดอยู่ — จะกลับมาเองอัตโนมัติ');
-    }
-  } else if (m.t === 'end') {
-    endStream('🏁', 'ไลฟ์จบแล้ว', 'ขอบคุณที่รับชม — ลิงก์นี้ใช้ไม่ได้อีกแล้ว');
-  } else if (m.t === 'answer' && m.to === vid && st.pc) {
-    if (typeof m.sdp !== 'string' || m.sdp.length > 100000) return;
-    // QoS 0 + หลาย broker อาจทำให้ได้ answer ซ้ำ — รับเฉพาะตอนที่ยังรอ answer อยู่จริง
-    if (st.pc.signalingState !== 'have-local-offer') return;
-    clearTimeout(st.answerTimer);
-    st.pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }).catch(e => { console.error(e); retryPeer(); });
-  } else if (m.t === 'reject' && m.to === vid) {
-    if (m.reason === 'ended') endStream('🏁', 'ไลฟ์จบแล้ว', 'ลิงก์นี้ใช้ไม่ได้อีกแล้ว');
-    else { overlay('🚫', 'ผู้ชมเต็ม', 'ลองใหม่อีกครั้งภายหลัง'); closePeer(); retryPeer(15000); }
-  }
-}
-
-function checkStatusTimeout() {
-  if (st.ended) return;
-  if (!st.lastStatus) {
-    // ยังไม่เคยได้ยินผู้ไลฟ์เลย: ไลฟ์ยังไม่เริ่ม / โปรแกรมผู้ไลฟ์ปิดอยู่ / ลิงก์หมดอายุ (ล็อกเอาท์ไปตอนไม่มีใครดู)
-    if (!st.noStreamerShown && st.onlineSince && Date.now() - st.onlineSince > NO_STREAMER_MS) {
-      st.noStreamerShown = true;
-      overlay('📴', 'ยังไม่พบผู้ไลฟ์',
-        st.mode === 'lobby' ? 'ผู้ไลฟ์อาจยังไม่เปิดไลฟ์ · หน้านี้จะเชื่อมต่อเองเมื่อไลฟ์เริ่ม'
-          : 'ผู้ไลฟ์อาจยังไม่เปิดไลฟ์ หรือลิงก์นี้หมดอายุแล้ว (ลูกค้าล็อกเอาท์ไปแล้ว) · หน้านี้จะเชื่อมต่อเองเมื่อไลฟ์เริ่ม');
-    }
-    return;
-  }
-  if (Date.now() - st.lastStatus > STATUS_TIMEOUT_MS) {
-    setLive(false);
-    overlay('📴', 'ผู้ไลฟ์ออฟไลน์', 'รอสัญญาณ… หน้านี้จะเชื่อมต่อใหม่เองเมื่อไลฟ์กลับมา');
-    closePeer();
-  }
-}
-
-function endStream(icon, title, sub) {
-  st.ended = true;
-  setLive(false);
-  closePeer();
-  st.signal?.stop();
-  if (st.mode === 'lobby') {
-    // เข้าสู่ระบบไว้: ไลฟ์รอบนี้จบ แต่บัตรยังใช้ได้ → รอรอบถัดไป (resume จะได้ token ใหม่เอง)
-    st.signal = null;
-    st.curToken = '';
-    overlay('🌙', 'ไลฟ์รอบนี้จบแล้ว', 'ขอบคุณที่รับชม · หน้านี้จะเชื่อมต่อให้เองเมื่อเริ่มไลฟ์รอบถัดไป');
-    setComposer(false);
-    $('connLabel').textContent = 'รอไลฟ์รอบถัดไป';
-    scheduleResume();
-    return;
-  }
-  overlay(icon, title, sub);
-  setComposer(false);
-  $('connLabel').textContent = 'จบไลฟ์';
-}
-
-// ---------- WebRTC ----------
-async function startPeer() {
-  closePeer();
-  loader.step(3);
-  overlay('📡', 'กำลังเปิดไลฟ์…', 'กำลังเชื่อมต่อกับผู้ไลฟ์');
-  const pc = new RTCPeerConnection({ iceServers: ICE });
-  st.pc = pc;
-  pc.addTransceiver('video', { direction: 'recvonly' });
-  pc.addTransceiver('audio', { direction: 'recvonly' });
-  const dc = pc.createDataChannel('ctl', { ordered: true });
-  st.dc = dc;
-  dc.bufferedAmountLowThreshold = 256 * 1024;
-  dc.onopen = () => { sendCtl({ t: 'quality', q: st.quality, fps: st.fps }); setComposer(true); };
-  dc.onclose = () => setComposer(false);
-  dc.onmessage = e => onCtl(e.data);
-
-  pc.ontrack = e => {
-    if (e.track.kind === 'video') waitFirstFrame();
-    const ms = video.srcObject instanceof MediaStream ? video.srcObject : new MediaStream();
-    ms.addTrack(e.track);
-    video.srcObject = ms;
-    video.play().catch(() => {});
-    updateUnmuteHint();
-  };
-  pc.onconnectionstatechange = () => {
-    const s = pc.connectionState;
-    if (pc !== st.pc) return;
-    if (s === 'connected') { loader.step(4); if (st.live) overlay(null); }
-    else if (s === 'failed' || s === 'closed') retryPeer();
-    else if (s === 'disconnected') setTimeout(() => { if (pc === st.pc && pc.connectionState === 'disconnected') retryPeer(); }, 5000);
-  };
-
-  try {
-    await pc.setLocalDescription(await pc.createOffer());
-    await waitIceComplete(pc, 3000);
-    if (pc !== st.pc) return;
-    await st.signal.send({ t: 'offer', vid, sdp: pc.localDescription.sdp, q: st.quality, fps: st.fps });
-    clearTimeout(st.answerTimer);
-    st.answerTimer = setTimeout(() => { if (pc === st.pc && !pc.currentRemoteDescription) retryPeer(); }, 10000);
-  } catch (e) {
-    console.error(e);
-    retryPeer();
-  }
-}
-
-// ภาพเฟรมแรกขึ้นจอจริง → ปิดหน้าโหลด
-function waitFirstFrame() {
-  if (loader.closed) return;
-  const finish = () => loader.done();   // เรียกซ้ำได้ (ปิดครั้งเดียว)
-  // rVFC ไม่ยิงเมื่อหน้าไม่ได้แสดงผล (แท็บพื้นหลัง) → ฟัง loadeddata/playing ด้วย อันไหนมาก่อนก็ปิด
-  if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(finish);
-  video.addEventListener('loadeddata', finish, { once: true });
-  video.addEventListener('playing', finish, { once: true });
-}
-
-function waitIceComplete(pc, ms) {
-  if (pc.iceGatheringState === 'complete') return Promise.resolve();
-  return new Promise(res => {
-    const t = setTimeout(res, ms);
-    pc.addEventListener('icegatheringstatechange', () => {
-      if (pc.iceGatheringState === 'complete') { clearTimeout(t); res(); }
-    });
-  });
-}
-
-function closePeer() {
-  clearTimeout(st.answerTimer);
-  if (st.dc) { try { st.dc.close(); } catch {} st.dc = null; }
-  if (st.pc) { try { st.pc.close(); } catch {} st.pc = null; }
-  if (video.srcObject) { video.srcObject.getTracks().forEach(t => t.stop()); video.srcObject = null; }
-  setComposer(false);
-  $('stats').textContent = '';
-}
-
-function retryPeer(delay = 3000) {
-  closePeer();
-  clearTimeout(st.retryTimer);
-  if (st.ended) return;
-  st.retryTimer = setTimeout(() => { if (st.live && !st.ended) startPeer(); }, delay);
-}
-
-// ---------- DataChannel ----------
-function sendCtl(obj) {
-  if (!st.dc || st.dc.readyState !== 'open') return false;
-  st.dc.send(JSON.stringify(obj));
-  return true;
-}
-
+// ---------- DataChannel (ตอบกลับจากผู้ไลฟ์) ----------
 const pendingAcks = new Map(); // id -> element
-function onCtl(raw) {
-  const m = safeJson(raw, 16 * 1024);
-  if (!m) return;
-  if (m.t === 'info') {
-    const w = clampInt(m.w, 0, 8192, 0), h = clampInt(m.h, 0, 8192, 0);
-    if (w && h) $('stats').dataset.size = `${w}×${h}`;
-    renderFpsOptions(m);
-  } else if (m.t === 'ack') {
-    const el = pendingAcks.get(String(m.id || ''));
-    if (el) { el.classList.add('acked'); pendingAcks.delete(m.id); }
+function onCtl(tile, m) {
+  if (m.t === 'ack') {
+    const row = pendingAcks.get(String(m.id || ''));
+    if (row) { row.classList.add('acked'); pendingAcks.delete(m.id); }
   } else if (m.t === 'rate') {
     toast(`ส่งเร็วเกินไป รออีก ${Math.ceil(clampInt(m.wait, 1, 600000, 1000) / 1000)} วินาที`);
   } else if (m.t === 'error') {
-    const why = Object.hasOwn(REASON_TEXT, m.reason) ? REASON_TEXT[m.reason] : 'ส่งไม่สำเร็จ';
-    toast(why);
+    toast(Object.hasOwn(REASON_TEXT, m.reason) ? REASON_TEXT[m.reason] : 'ส่งไม่สำเร็จ');
   }
 }
 
-function canSend() {
-  if (!st.dc || st.dc.readyState !== 'open') { toast('ยังไม่ได้เชื่อมต่อไลฟ์'); return false; }
-  const wait = st.lastSend + SEND_GAP_MS - Date.now();
-  if (wait > 0) { toast('ส่งเร็วเกินไป รอสักครู่'); return false; }
-  st.lastSend = Date.now();
-  return true;
+// ---------- ปลายทางแชต ----------
+// ดูหลายเกม: เลือกส่งถึงเกมไหน หรือ "Overall" (ไม่ระบุเกม — ส่งครั้งเดียว ป๊อปอัปไม่ใส่ชื่อลูกค้า)
+function refreshTargets() {
+  const sel = $('chatTarget');
+  const tiles = [...st.tiles.values()];
+  const multi = tiles.length > 1;
+  sel.classList.toggle('hidden', !multi);
+  if (!multi) { st.target = tiles[0]?.id || 'all'; return; }
+  const opts = [['all', '🌐 Overall (ทุกเกม)'], ...tiles.map(t => [t.id, '🎮 ' + (t.name || t.title || 'เกม')])];
+  sel.replaceChildren(...opts.map(([v, label]) => { const o = el('option', null, label); o.value = v; return o; }));
+  if (!opts.some(([v]) => v === st.target)) st.target = 'all';
+  sel.value = st.target;
 }
 
-function logItem(node) {
+function targetTile() {
+  const tiles = [...st.tiles.values()];
+  if (tiles.length <= 1) return { tile: tiles[0] || null, all: false };
+  if (st.target === 'all') return { tile: tiles.find(t => t.open) || null, all: true };
+  return { tile: st.tiles.get(st.target) || null, all: false };
+}
+
+function targetLabel(all, tile) {
+  if (st.tiles.size <= 1) return '';
+  return all ? 'ทุกเกม' : (tile?.name || tile?.title || '');
+}
+
+function updateComposer() {
+  const any = [...st.tiles.values()].some(t => t.open);
+  const enabled = st.view === 'watch' && any;
+  for (const id of ['msgInput', 'sendBtn', 'pickerBtn', 'imageBtn', 'chatTarget']) $(id).disabled = !enabled;
+  $('msgInput').placeholder = enabled ? 'พิมพ์ข้อความ…' : 'รอเชื่อมต่อไลฟ์ก่อนจึงจะส่งข้อความได้';
+}
+
+function canSend() {
+  const { tile, all } = targetTile();
+  if (!tile || !tile.open) { toast(st.tiles.size > 1 && !all ? 'เกมที่เลือกยังไม่ได้เชื่อมต่อ' : 'ยังไม่ได้เชื่อมต่อไลฟ์'); return null; }
+  const wait = st.lastSend + SEND_GAP_MS - Date.now();
+  if (wait > 0) { toast('ส่งเร็วเกินไป รอสักครู่'); return null; }
+  st.lastSend = Date.now();
+  return { tile, all };
+}
+
+function logItem(node, label) {
   const log = $('chatLog');
-  const row = document.createElement('div');
-  row.className = 'msg';
+  const row = el('div', 'msg');
+  if (label) row.appendChild(el('span', 'msg-to', '→ ' + label));
   row.appendChild(node);
-  const tick = document.createElement('span');
-  tick.className = 'tick';
-  tick.textContent = '✓';
-  row.appendChild(tick);
+  row.appendChild(el('span', 'tick', '✓'));
   log.appendChild(row);
   while (log.children.length > 60) log.removeChild(log.children[1]);
   log.scrollTop = log.scrollHeight;
   return row;
 }
 
+function withAll(obj, all) { return all ? { ...obj, all: true } : obj; }
+
 function sendText(raw) {
   const text = cleanText(raw, 500);   // ลบอักขระควบคุม/กลับทิศ/แท็ก HTML/javascript: ก่อนส่ง
   if (!text) { if (raw.trim()) toast('ข้อความนี้มีแต่อักขระที่ไม่อนุญาต จึงไม่ส่ง'); return !!raw.trim(); }
-  if (!canSend()) return false;
+  const to = canSend();
+  if (!to) return false;
   const id = rid();
-  sendCtl({ t: 'chat', id, text });
-  const span = document.createElement('span');
-  span.className = 'msg-text';
-  span.textContent = text;
-  pendingAcks.set(id, logItem(span));
+  to.tile.sendCtl(withAll({ t: 'chat', id, text }, to.all));
+  pendingAcks.set(id, logItem(el('span', 'msg-text', text), targetLabel(to.all, to.tile)));
   return true;
 }
 
@@ -640,34 +709,35 @@ function sendGif(rawUrl, rawW, rawH, rawPreview) {
   const url = safeGiphyUrl(rawUrl);
   if (!url) { toast('GIF นี้มาจากแหล่งที่ไม่อนุญาต'); return; }
   const preview = safeGiphyUrl(rawPreview) || url;
-  if (!canSend()) return;
+  const to = canSend();
+  if (!to) return;
   const id = rid();
-  sendCtl({ t: 'gif', id, url, w: clampInt(rawW, 1, 4096, 200), h: clampInt(rawH, 1, 4096, 200) });
-  const img = document.createElement('img');
-  img.className = 'msg-img';
+  to.tile.sendCtl(withAll({ t: 'gif', id, url, w: clampInt(rawW, 1, 4096, 200), h: clampInt(rawH, 1, 4096, 200) }, to.all));
+  const img = el('img', 'msg-img');
   img.src = preview;
   img.alt = 'GIF';
-  pendingAcks.set(id, logItem(img));
+  pendingAcks.set(id, logItem(img, targetLabel(to.all, to.tile)));
   closePicker();
 }
 
 async function sendFile(file, kind, name = 'image') {
-  if (!st.dc || st.dc.readyState !== 'open') { toast('ยังไม่ได้เชื่อมต่อไลฟ์'); return; }
+  const pre = targetTile();
+  if (!pre.tile || !pre.tile.open) { toast('ยังไม่ได้เชื่อมต่อไลฟ์'); return; }
   // ตรวจไบต์จริง + สแกนโค้ดฝัง + จำกัดขนาด + วาดใหม่ลบข้อมูลแฝง (GIF คงไฟล์เดิม)
   const safe = await sanitizeImageFile(file);
   if (!safe.ok) { toast(REASON_TEXT[safe.reason] || 'ส่งไม่สำเร็จ'); return; }
   if (safe.mime === 'image/gif' && kind === 'image') kind = 'gif';
   const blob = safe.blob;
-  if (!canSend()) return;
+  const to = canSend();
+  if (!to) return;
   const id = rid();
-  const dc = st.dc;
+  const dc = to.tile.dc;
   const cleanName = cleanText(String(name), 80, { singleLine: true }).replace(/[\\/:*?"<>|]/g, '_') || 'image';
-  sendCtl({ t: 'file-start', id, kind, mime: safe.mime, size: blob.size, name: cleanName });
-  const img = document.createElement('img');
-  img.className = 'msg-img';
+  to.tile.sendCtl(withAll({ t: 'file-start', id, kind, mime: safe.mime, size: blob.size, name: cleanName }, to.all));
+  const img = el('img', 'msg-img');
   img.src = URL.createObjectURL(blob);
   img.alt = kind;
-  const row = logItem(img);
+  const row = logItem(img, targetLabel(to.all, to.tile));
   row.classList.add('sending');
   pendingAcks.set(id, row);
   const buf = new Uint8Array(await blob.arrayBuffer());
@@ -681,99 +751,9 @@ async function sendFile(file, kind, name = 'image') {
     for (let i = 0; i < part.length; i++) bin += String.fromCharCode(part[i]);
     dc.send(JSON.stringify({ t: 'file-chunk', id, seq, data: btoa(bin) }));
   }
-  sendCtl({ t: 'file-end', id });
+  to.tile.sendCtl({ t: 'file-end', id });
   row.classList.remove('sending');
   closePicker();
-}
-
-// ตัวเลือก fps มาจากผู้ไลฟ์ (fpsOptions ไม่เกิน Hz จอของผู้ไลฟ์) — ผู้ไลฟ์รุ่นเก่าไม่ส่งมา = ซ่อนไว้
-function renderFpsOptions(m) {
-  const sel = $('fps');
-  const opts = Array.isArray(m.fpsOptions) ? m.fpsOptions.slice(0, 20).map(Number).filter(n => Number.isInteger(n) && n > 0 && n <= 1000) : [];
-  if (!opts.length) { sel.classList.add('hidden'); return; }
-  const cur = clampInt(m.fps, 1, 1000, st.fps);
-  if (sel.dataset.opts !== opts.join(',')) {
-    sel.replaceChildren(...opts.map(n => {
-      const o = document.createElement('option');
-      o.value = String(n);
-      o.textContent = n + ' fps';
-      return o;
-    }));
-    sel.dataset.opts = opts.join(',');
-  }
-  sel.value = String(opts.includes(cur) ? cur : opts[opts.length - 1]);
-  sel.title = `เฟรมต่อวินาที (สูงสุด ${clampInt(m.maxFps, 1, 1000, opts[opts.length - 1])} fps ตาม Hz จอของผู้ไลฟ์)`;
-  sel.classList.remove('hidden');
-}
-
-// ---------- controls ----------
-function setupControls() {
-  const vol = Number(lsGet('dt_vol', '80'));
-  $('volume').value = vol;
-  video.volume = vol / 100;
-  $('volVal').textContent = vol + '%';
-  $('quality').value = st.quality;
-
-  $('volume').addEventListener('input', e => {
-    const v = Number(e.target.value);
-    video.volume = v / 100;
-    $('volVal').textContent = v + '%';
-    lsSet('dt_vol', String(v));
-    if (v > 0 && video.muted) setMuted(false);
-  });
-  $('muteBtn').addEventListener('click', () => setMuted(!video.muted));
-  $('unmuteBtn').addEventListener('click', () => setMuted(false));
-  $('quality').addEventListener('change', e => {
-    st.quality = e.target.value;
-    lsSet('dt_quality', st.quality);
-    sendCtl({ t: 'quality', q: st.quality });
-    toast('เปลี่ยนคุณภาพเป็น ' + e.target.selectedOptions[0].textContent);
-  });
-  $('fps').addEventListener('change', e => {
-    st.fps = Number(e.target.value) || 30;
-    lsSet('dt_fps', String(st.fps));
-    sendCtl({ t: 'quality', fps: st.fps });
-    toast('เปลี่ยนเป็น ' + st.fps + ' fps');
-  });
-  const fs = () => {
-    const el = $('stage');
-    if (document.fullscreenElement) document.exitFullscreen();
-    else if (el.requestFullscreen) el.requestFullscreen();
-    else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
-  };
-  $('fsBtn').addEventListener('click', fs);
-  video.addEventListener('dblclick', fs);
-  setInterval(updateStats, 1000);
-  updateMuteUi();
-}
-
-function setMuted(m) {
-  video.muted = m;
-  if (!m) video.play().catch(() => {});
-  updateMuteUi();
-}
-
-function updateMuteUi() {
-  $('muteBtn').textContent = video.muted || video.volume === 0 ? '🔇' : '🔊';
-  updateUnmuteHint();
-}
-
-function updateUnmuteHint() {
-  $('unmuteBtn').classList.toggle('hidden', !(video.muted && video.srcObject));
-}
-
-async function updateStats() {
-  const pc = st.pc;
-  if (!pc || pc.connectionState !== 'connected') return;
-  try {
-    const stats = await pc.getStats();
-    stats.forEach(r => {
-      if (r.type === 'inbound-rtp' && r.kind === 'video' && r.frameWidth) {
-        const fps = r.framesPerSecond ? Math.round(r.framesPerSecond) : '–';
-        $('stats').textContent = `${r.frameWidth}×${r.frameHeight} · ${fps}fps`;
-      }
-    });
-  } catch {}
 }
 
 // ---------- chat UI ----------
@@ -786,6 +766,7 @@ function setupChat() {
     e.preventDefault();
     if (sendText($('msgInput').value)) $('msgInput').value = '';
   });
+  $('chatTarget').addEventListener('change', e => { st.target = e.target.value; });
   $('pickerBtn').addEventListener('click', () => $('picker').classList.toggle('hidden'));
   $('imageBtn').addEventListener('click', () => $('fileImage').click());
   $('fileImage').addEventListener('change', e => {
@@ -806,10 +787,8 @@ function setupChat() {
 
   const grid = $('emojiGrid');
   for (const em of EMOJIS) {
-    const b = document.createElement('button');
+    const b = el('button', 'emoji', em);
     b.type = 'button';
-    b.className = 'emoji';
-    b.textContent = em;
     b.addEventListener('click', () => {
       const inp = $('msgInput');
       inp.value = (inp.value + em).slice(0, 500);
@@ -844,10 +823,7 @@ function closePicker() { $('picker').classList.add('hidden'); }
 
 // ข้อความว่างในตาราง — ใช้ textContent (ไม่มี innerHTML ในหน้านี้เลย)
 function emptyMsg(grid, text) {
-  const d = document.createElement('div');
-  d.className = 'empty';
-  d.textContent = text;
-  grid.replaceChildren(d);
+  grid.replaceChildren(el('div', 'empty', text));
 }
 
 async function loadPack() {
@@ -904,16 +880,13 @@ async function renderMine() {
   }
   items.sort((a, b) => a.added - b.added);
   for (const it of items) {
-    const wrap = document.createElement('div');
-    wrap.className = 'mine-item';
+    const wrap = el('div', 'mine-item');
     const img = document.createElement('img');
     img.src = URL.createObjectURL(it.blob);
     img.alt = 'sticker';
     img.addEventListener('click', () => sendFile(it.blob, 'sticker', 'sticker'));
-    const del = document.createElement('button');
+    const del = el('button', 'del', '×');
     del.type = 'button';
-    del.className = 'del';
-    del.textContent = '×';
     del.title = 'ลบสติกเกอร์นี้';
     del.addEventListener('click', async ev => { ev.stopPropagation(); await stickerDb('delete', it.id); renderMine(); });
     wrap.append(img, del);

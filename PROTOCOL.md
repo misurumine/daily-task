@@ -77,7 +77,7 @@ plaintext        = UTF-8(JSON) และต้องมี "ts" (Unix ms)
 | t | ฟิลด์ | หมายเหตุ |
 |---|---|---|
 | `quality` | `q` = `source` \| `1080` \| `720` \| `480` \| `360`, `fps` (ตัวเลข) — ส่งอย่างใดอย่างหนึ่งหรือทั้งคู่ | ความสูงเป้าหมาย (คงอัตราส่วน, ไม่ขยายเกินต้นฉบับ) / เฟรมต่อวินาที (ผู้ไลฟ์ปัดลงไม่ให้เกิน Hz จอตัวเอง) |
-| `chat` | `id`, `text` (≤ 500 ตัวอักษร) | ข้อความ/Emoji |
+| `chat` | `id`, `text` (≤ 500 ตัวอักษร), `all?` | ข้อความ/Emoji · `all: true` = "Overall" จากผู้ชมที่ดูหลายเกม (ส่งช่องเดียว ป๊อปอัปไม่ใส่ชื่อลูกค้า) — ใช้กับ `gif`/`file-start` ได้เหมือนกัน |
 | `gif` | `id`, `url`, `w`, `h` | GIF จาก Giphy — ผู้ไลฟ์ต้องรับเฉพาะ `https://media*.giphy.com/` |
 | `file-start` | `id`, `kind` (`image`\|`gif`\|`sticker`), `mime`, `size`, `name` | เริ่มส่งไฟล์ภาพ (≤ 5 MB, `image/png\|jpeg\|gif\|webp`) |
 | `file-chunk` | `id`, `seq`, `data` (base64 ของข้อมูลดิบ ≤ 12 KB) | |
@@ -103,7 +103,7 @@ plaintext        = UTF-8(JSON) และต้องมี "ts" (Unix ms)
 
 ## 7. เข้าสู่ระบบแทนลิงก์ (lobby) — `js/lobby.js` ↔ `live_lobby.py`
 
-เปิด `watch.html` **ไม่มี `#token`** → ผู้ชมเข้าสู่ระบบด้วย Google แล้วกรอก username/password ของเกม (ข้อมูลลูกค้าในโปรแกรมผู้ไลฟ์) → ได้ token ไลฟ์ของลูกค้าคนนั้น แล้วใช้ข้อ 1–6 ตามเดิม (ลิงก์ Discord ยังใช้ได้เหมือนเดิม)
+เปิด `watch.html` **ไม่มี `#token`** → ผู้ชมเข้าสู่ระบบด้วย Google → รายการ "เกมของฉัน" (เพิ่มเกมด้วย username/password ของเกมนั้นครั้งเดียว) → ดูเกมเดียวหรือหลายเกมพร้อมกัน (สูงสุด 4) — แต่ละช่องใช้ token ของเกมนั้นกับข้อ 1–6 ตามเดิม (ลิงก์ Discord ยังใช้ได้เหมือนเดิม = ดู 1 เกม)
 
 - **กุญแจร้าน**: ECDH P-256 คู่เดียวต่อร้าน · private อยู่ที่ `Data/Live/lobby_key.json` ของโปรแกรม (DPAPI) · public (65 ไบต์ uncompressed → base64url) ฝังใน `js/lobby-config.js` — **ต้องตรงกับหน้าตั้งค่า "กุญแจร้าน"**
 - **Topic**: `id = hex(SHA-256(pub)[:16])` · คำขอ `dtlobby/v1/<id>/q` · คำตอบ `dtlobby/v1/<id>/r/<rid>` (ผู้ชม subscribe ก่อนส่ง) · ส่ง/ตอบทุก broker (ข้อ 3) QoS 0 ไม่ retain
@@ -115,12 +115,16 @@ plaintext        = UTF-8(JSON) และต้องมี "ts" (Unix ms)
 | t | คำขอ | คำตอบ |
 |---|------|-------|
 | `hello` | — | `{ok, clientId}` Google OAuth Client ID ของร้าน (ว่าง/`ok:false` = ยังไม่เปิดล็อกอิน) |
-| `login` | `{gid, u, p, pick?}` gid = Google ID token | สำเร็จ `{ok:true, card, name, token, live}` · ไม่สำเร็จ `{ok:false, reason}` |
-| `resume` | `{card, sub}` | `{ok:true, name, token, live}` (`token` ว่างเมื่อยังไม่ไลฟ์) · `{ok:false, reason:"expired"}` |
+| `login` | `{gid}` gid = Google ID token | `{ok:true, card, sub, games, dropped}` · `{ok:false, reason: "google"\|"disabled"}` |
+| `list` | `{card, sub}` | `{ok:true, games, dropped}` · `{ok:false, reason:"expired"}` |
+| `add` | `{card, sub, u, p, pick?}` | `{ok:true, added, games, dropped}` · `{ok:false, reason}` |
+| `remove` | `{card, sub, id}` | `{ok:true, games, dropped}` |
 | `logout` | `{card}` | `{ok:true}` |
 
-- `reason` ของ login: `bad` (ไอดี/รหัสผิด), `locked` + `wait` วิ (ผิด 5 ครั้งใน 15 นาที ต่อบัญชี Google และต่อ username → พัก 15 นาที), `offline` (ลูกค้ายังไม่ล็อกอิน/ไม่มีไลฟ์), `google` (ID token ไม่ผ่าน), `disabled`, `choose` + `options[{id,name}]` (รหัสนี้ตรงกับหลายรายการที่ไลฟ์อยู่ → ส่ง `pick` ซ้ำ)
+- **games** = `[{id, name, title, live, token, since}]` — `title` = ชื่อหน้าต่างเกม, `token` มีเฉพาะเกมที่กำลังส่งภาพ (`live:true`), `since` = เวลาเข้าไอดี (ms) · เรียง: กำลังไลฟ์ก่อน ตามเวลาเข้าไอดี (เข้าก่อนอยู่บน) → ไม่ได้ไลฟ์ ตามลำดับที่เพิ่ม · `dropped` = จำนวนเกมที่หลุดจากรายการรอบนี้ (ลูกค้าเปลี่ยนรหัส/ถูกลบ)
+- `reason` ของ add: `bad` (ไอดี/รหัสผิด), `locked` + `wait` วิ (ผิด 5 ครั้งใน 15 นาที ต่อบัญชี Google และต่อ username → พัก 15 นาที), `choose` + `options[{id,name}]` (รหัสนี้ตรงกับหลายรายการ → ส่ง `pick` ซ้ำ), `expired`
 - **ฝั่งผู้ไลฟ์ตรวจ Google ID token เอง**: RS256 กับ `https://www.googleapis.com/oauth2/v3/certs`, `iss` = `accounts.google.com`, `aud` = Client ID, ยังไม่หมดอายุ
-- **บัตรผู้ชม (`card`)**: สุ่ม 32 ไบต์ base64url (43 ตัว) เก็บใน `localStorage["dt_viewer"]` ของผู้ชม `{card, sub, email, name}` · ฝั่งผู้ไลฟ์เก็บแค่ SHA-256 ใน `Data/Live/viewer_cards.json` ผูกกับลูกค้า + `sub` ของ Google + ลายนิ้วมือรหัส · ใช้ไม่ได้เมื่อ: กดออกจากระบบ, `sub` ไม่ตรง (เปลี่ยนบัญชี Google), ลูกค้าเปลี่ยนรหัส/ถูกลบ · ไม่มีวันหมดอายุนอกจากนี้
-- หน้าเว็บถาม `resume` ซ้ำทุก 15 วิ (รอไลฟ์) / 60 วิ (กำลังดู) → ลูกค้าล็อกอินรอบใหม่ได้ token ใหม่ = ต่อให้เองอัตโนมัติ · ได้ `end` ในโหมดนี้ = รอรอบถัดไป (ไม่ใช่ "ลิงก์ใช้ไม่ได้")
+- **บัตรผู้ชม (`card`)**: สุ่ม 32 ไบต์ base64url (43 ตัว) 1 ใบต่อเบราว์เซอร์ เก็บใน `localStorage["dt_viewer"]` `{card, sub, email}` · ฝั่งผู้ไลฟ์ (`Data/Live/viewer_cards.json` v2) เก็บแค่ SHA-256 ของบัตร + บัญชีตาม Google `sub` ที่มีรายการเกม `{cid, ลายนิ้วมือรหัส}` · ออกจากระบบ = ยกเลิกบัตรของเบราว์เซอร์นั้น (เกมยังผูกกับบัญชี Google — ล็อกอินใหม่ได้รายการเดิม) · `sub` ไม่ตรง = ใช้ไม่ได้ · ลูกค้าเปลี่ยนรหัส/ถูกลบ = เกมนั้นหลุดจากรายการ (เกมอื่นไม่กระทบ) · ไฟล์ v1 (บัตรละ 1 เกม) แปลงอัตโนมัติ
+- หน้าเว็บถาม `list` ซ้ำทุก 15 วิ (หน้ารายการ) / 30 วิ (กำลังดู) → ไลฟ์รอบใหม่ได้ token ใหม่ = ช่องนั้นต่อให้เองอัตโนมัติ · ได้ `end` ในโหมดนี้ = รอรอบถัดไป · กลับไปหน้ารายการ = ปิดทุกช่อง (คืนโควตาผู้ชม)
+- **ดูหลายเกม**: 1 ช่อง = 1 RTCPeerConnection + Signal ของเกมนั้น (นับเป็นผู้ชม 1 คนของเกมนั้น) · เสียงทุกช่องเล่นพร้อมกัน ปรับ/ปิดแยกช่อง (`localStorage["dt_vol:<id>"]`) · แชตเลือกปลายทาง: เกมใดเกมหนึ่ง หรือ Overall (`all: true` ข้อ 5)
 - **CSP ของปุ่ม Google**: `script-src https://accounts.google.com/gsi/client`, `frame-src`/`connect-src https://accounts.google.com/gsi/`, `style-src https://accounts.google.com/gsi/style 'unsafe-inline'` (GSI แทรก `<style>` เอง) · `referrer` = `strict-origin-when-cross-origin` (Google ต้องรู้ origin) · สคริปต์ Google โหลดเฉพาะตอนต้องแสดงหน้าเข้าสู่ระบบ

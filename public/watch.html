@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Itim&family=Sarabun:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/watch.css?v=4" />
+  <link rel="stylesheet" href="./css/watch.css?v=5" />
 </head>
 <body>
   <!-- หน้าโหลดตอนเปิดลิงก์ — ความคืบหน้าเดินตามขั้นตอนเชื่อมต่อจริง (js/watch.js: loader) -->
@@ -70,40 +70,55 @@
     </div>
   </header>
 
-  <main class="layout">
+  <main class="layout" id="layout">
     <section class="stage-wrap">
-      <div class="stage" id="stage">
-        <video id="video" playsinline autoplay muted></video>
-
-        <div class="overlay" id="overlay">
-          <div class="overlay-icon" id="overlayIcon">⏳</div>
-          <div class="overlay-title" id="overlayTitle">กำลังเชื่อมต่อ…</div>
-          <div class="overlay-sub" id="overlaySub"></div>
+      <!-- รายการ "เกมของฉัน" (เข้าสู่ระบบด้วย Google) — js/watch.js renderGames -->
+      <div class="games hidden" id="games">
+        <div class="games-head">
+          <h2 class="games-title">🎮 เกมของฉัน</h2>
+          <div class="games-actions">
+            <button type="button" class="mini-btn" id="refreshBtn" title="อัปเดตสถานะ">⟳</button>
+            <button type="button" class="mini-btn" id="addGameBtn">＋ เพิ่มเกม</button>
+            <button type="button" class="send-btn" id="watchSelBtn" disabled>▶ ดูพร้อมกัน</button>
+          </div>
         </div>
+        <div class="games-sub">ติ๊กเลือกเกมที่กำลังไลฟ์ (สูงสุด 4 เกม) แล้วกด "ดูพร้อมกัน" หรือกด "▶ ดู" เพื่อดูเกมเดียว · เรียงตามเวลาที่เข้าไอดี</div>
 
-        <button class="unmute-btn hidden" id="unmuteBtn" type="button">🔊 แตะเพื่อเปิดเสียง</button>
+        <form class="add-form hidden" id="addForm" autocomplete="on">
+          <div class="add-head">＋ เพิ่มเกมด้วยไอดี/รหัสเกมที่ให้ร้านไว้ (ครั้งเดียวต่อเกม)</div>
+          <div class="add-row">
+            <input id="aUser" type="text" maxlength="200" placeholder="ไอดีเกม (username)" autocomplete="username" spellcheck="false" autocapitalize="off">
+            <div class="gate-pass">
+              <input id="aPass" type="password" maxlength="200" placeholder="รหัสผ่าน" autocomplete="current-password">
+              <button type="button" class="gate-eye" id="aShowPass" title="แสดง/ซ่อนรหัส">👁</button>
+            </div>
+          </div>
+          <div class="add-row add-btns">
+            <button type="submit" class="send-btn" id="aSubmit">🌸 เพิ่มเกม</button>
+            <button type="button" class="mini-btn" id="aCancel">ยกเลิก</button>
+          </div>
+          <div class="gate-choose" id="aChoose"></div>
+          <div class="gate-msg" id="aMsg" role="alert"></div>
+          <div class="gate-note">ข้อมูลเข้ารหัสส่งตรงถึงโปรแกรมของร้านเท่านั้น · ลองผิด 5 ครั้งระบบจะพัก 15 นาที</div>
+        </form>
 
-        <div class="controls" id="controls">
-          <button class="ctl-btn" id="muteBtn" type="button" title="ปิด/เปิดเสียง">🔇</button>
-          <input class="volume" id="volume" type="range" min="0" max="100" step="1" value="80" aria-label="ระดับเสียง">
-          <span class="vol-val" id="volVal">80%</span>
-          <span class="spacer"></span>
-          <span class="stats" id="stats"></span>
-          <select class="quality" id="quality" aria-label="คุณภาพวิดีโอ">
-            <option value="source">ต้นฉบับ</option>
-            <option value="1080">1080p</option>
-            <option value="720">720p</option>
-            <option value="480">480p</option>
-            <option value="360">360p</option>
-          </select>
-          <select class="quality hidden" id="fps" aria-label="เฟรมต่อวินาที" title="เฟรมต่อวินาที (สูงสุดเท่า Hz จอของผู้ไลฟ์)"></select>
-          <button class="ctl-btn" id="fsBtn" type="button" title="เต็มจอ">⛶</button>
+        <div class="gate-msg" id="gamesMsg" role="status"></div>
+        <div class="game-list" id="gameList"></div>
+      </div>
+
+      <!-- ช่องดูไลฟ์ (1–4 ช่อง) — js/stream.js LiveTile -->
+      <div class="watch hidden" id="watch">
+        <div class="watch-bar">
+          <button type="button" class="mini-btn hidden" id="backBtn">← รายการเกม</button>
+          <span class="watch-count" id="watchCount"></span>
         </div>
+        <div class="grid" id="grid" data-n="1"></div>
       </div>
     </section>
 
     <aside class="chat">
-      <div class="chat-head">🌸 ส่งข้อความถึงผู้ไลฟ์</div>
+      <div class="chat-head"><span>🌸 ส่งข้อความถึงผู้ไลฟ์</span>
+        <select class="chat-target hidden" id="chatTarget" aria-label="ส่งข้อความถึงเกม"></select></div>
       <div class="chat-log" id="chatLog">
         <div class="chat-hint">ข้อความ, Emoji, สติกเกอร์, GIF และรูป จะเด้งขึ้นบนจอของผู้ไลฟ์ (ไม่มีการเก็บประวัติ)</div>
       </div>
@@ -148,32 +163,10 @@
     <div class="gate-card">
       <div class="gate-flower" aria-hidden="true">🌸</div>
       <h2 class="gate-title" id="gTitle">เข้าสู่ระบบเพื่อดูไลฟ์</h2>
-      <p class="gate-sub">ยืนยันตัวตนด้วย Google แล้วกรอกไอดี/รหัสเกมที่ให้ร้านไว้ · เข้าครั้งเดียว ระบบจำไว้จนกว่าจะกดออกจากระบบ</p>
-
-      <div class="gate-step" id="gStep1">
-        <div class="gate-step-head"><span class="gate-num">1</span> ยืนยันตัวตนด้วย Google</div>
-        <div id="gBtnWrap" class="gate-gbtn"><div id="gBtn"></div></div>
-        <div id="gSigned" class="gate-signed hidden">
-          <span>✅ <span id="gEmail"></span></span>
-          <button type="button" class="gate-link" id="gSwitch">เปลี่ยนบัญชี</button>
-        </div>
-      </div>
-
-      <form class="gate-step locked" id="gStep2" autocomplete="on">
-        <div class="gate-step-head"><span class="gate-num">2</span> ไอดี / รหัสผ่านของเกม</div>
-        <div id="gForm-fields">
-          <input id="gUser" type="text" maxlength="200" placeholder="ไอดีเกม (username)" autocomplete="username" spellcheck="false" autocapitalize="off" disabled>
-          <div class="gate-pass">
-            <input id="gPass" type="password" maxlength="200" placeholder="รหัสผ่าน" autocomplete="current-password" disabled>
-            <button type="button" class="gate-eye" id="gShowPass" title="แสดง/ซ่อนรหัส">👁</button>
-          </div>
-          <button type="submit" class="send-btn gate-submit" id="gSubmit" disabled>🌸 เข้าดูไลฟ์</button>
-        </div>
-        <div class="gate-choose" id="gChoose"></div>
-      </form>
-
+      <p class="gate-sub">ยืนยันตัวตนด้วย Google แล้วเลือกเกมที่ต้องการดู · เข้าครั้งเดียว ระบบจำไว้จนกว่าจะกดออกจากระบบ</p>
+      <div class="gate-gbtn"><div id="gBtn"></div></div>
       <div class="gate-msg" id="gMsg" role="alert"></div>
-      <div class="gate-note">ข้อมูลเข้ารหัสส่งตรงถึงโปรแกรมของร้านเท่านั้น · ลองผิด 5 ครั้งระบบจะพัก 15 นาที</div>
+      <div class="gate-note">เกมที่เพิ่มไว้จะผูกกับบัญชี Google นี้ — เข้าจากเครื่องไหนก็เห็นรายการเดิม</div>
     </div>
   </div>
 
@@ -181,6 +174,6 @@
 
   <!-- integrity = ลายนิ้วมือไฟล์ ถ้า CDN ถูกแก้ไฟล์ เบราว์เซอร์จะไม่รันเลย -->
   <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js" integrity="sha384-u4uqeACkFcoKl57rBQJHVGDd1pqhW4w8X3WjTu1ZksPdxoLqdt34jpoNkJisE25W" crossorigin="anonymous"></script>
-  <script type="module" src="./js/watch.js?v=7"></script>
+  <script type="module" src="./js/watch.js?v=8"></script>
 </body>
 </html>

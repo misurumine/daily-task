@@ -1,7 +1,7 @@
 // Protocol §7: ประตูเข้าสู่ระบบ (lobby) — คุยกับโปรแกรมผู้ไลฟ์ผ่าน MQTT แบบเข้ารหัสด้วยกุญแจร้าน
 // ทุกคำขอใช้กุญแจชั่วคราวใหม่ (ECDH P-256) → broker/คนอื่นเห็นแค่ข้อมูลที่เข้ารหัสแล้ว และคำตอบมีแต่ร้านตัวจริงที่สร้างได้
 import { SHOP_KEY } from './lobby-config.js?v=1';
-import { BROKERS } from './signal.js?v=2';
+import { BROKERS } from './signal.js?v=3';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
