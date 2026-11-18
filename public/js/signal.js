@@ -1,66 +1,68 @@
-// Protocol v1 §3: ช่องสัญญาณ MQTT (เข้ารหัส) — ลอง broker ทีละตัว ถ้าไม่ได้ status ภายใน 8 วิ ย้ายไปตัวถัดไป
+// Protocol v1 §3: ช่องสัญญาณ MQTT (เข้ารหัส) — เชื่อมต่อ "ทุก broker พร้อมกัน"
+// broker ฟรีบางตัวล่ม/ช้าเป็นช่วง ๆ: ตัวไหนส่ง status มาก่อนก็ใช้ได้ทันที ไม่ต้องรอลองทีละตัว
+// ข้อความที่ผู้ชมส่ง (offer/bye) ส่งออกทุกตัวที่ต่ออยู่ — ผู้ไลฟ์ข้าม offer ซ้ำ, ผู้ชมรับ answer ครั้งเดียว (PROTOCOL.md)
 import { seal, open } from './crypto.js';
 
-const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
-const STATUS_WAIT_MS = 8000;
+const BROKERS = [
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://mqtt-dashboard.com:8884/mqtt',   // HiveMQ ตัวเดียวกับ broker.hivemq.com (ชื่อนี้ไม่มี IPv6 จึงต่อได้เร็วกว่า)
+  'wss://test.mosquitto.org:8081/mqtt',
+];
 
 export class Signal {
   constructor(session, onMessage, onState) {
     this.s = session;
     this.onMessage = onMessage;
     this.onState = onState;
-    this.idx = 0;
-    this.client = null;
-    this.gotStatus = false;
-    this.timer = null;
+    this.clients = [];
+    this.state = null;
   }
 
   start() {
-    this._connect();
+    this._setState('connecting');
+    this.clients = BROKERS.map(url => this._connect(url));
   }
 
-  _connect() {
-    clearTimeout(this.timer);
-    if (this.client) { try { this.client.end(true); } catch {} }
-    const url = BROKERS[this.idx % BROKERS.length];
-    this.onState('connecting');
+  _connect(url) {
     const c = window.mqtt.connect(url, {
       clientId: 'dtv_' + Math.random().toString(16).slice(2, 12),
-      clean: true, keepalive: 30, reconnectPeriod: 3000, connectTimeout: 8000,
+      clean: true, keepalive: 30, reconnectPeriod: 3000, connectTimeout: 15000,
     });
-    this.client = c;
     c.on('connect', () => {
-      this.onState('online');
       c.subscribe(this.s.topicS, { qos: 0 });
-      this._armFailover();
+      this._updateState();
     });
     c.on('message', async (topic, payload) => {
       if (topic !== this.s.topicS) return;
       const msg = await open(this.s.key, topic, payload);
       if (!msg) return;
-      if (msg.t === 'status' || msg.t === 'end') { this.gotStatus = true; clearTimeout(this.timer); }
       try { this.onMessage(msg); } catch (e) { console.error(e); }
     });
-    c.on('offline', () => this.onState('offline'));
-    c.on('error', () => this.onState('offline'));
+    for (const ev of ['offline', 'close', 'error']) c.on(ev, () => this._updateState());
+    return c;
   }
 
-  _armFailover() {
-    clearTimeout(this.timer);
-    this.timer = setTimeout(() => {
-      if (!this.gotStatus) { this.idx++; this._connect(); }
-    }, STATUS_WAIT_MS);
+  _updateState() {
+    if (this.clients.some(c => c.connected)) this._setState('online');
+    else if (this.state === 'online') this._setState('offline');
+  }
+
+  _setState(s) {
+    if (s === this.state) return;
+    this.state = s;
+    this.onState(s);
   }
 
   async send(obj) {
-    if (!this.client || !this.client.connected) return false;
+    const live = this.clients.filter(c => c.connected);
+    if (!live.length) return false;
     const payload = await seal(this.s.key, this.s.topicV, obj);
-    this.client.publish(this.s.topicV, payload, { qos: 0, retain: false });
+    for (const c of live) c.publish(this.s.topicV, payload, { qos: 0, retain: false });
     return true;
   }
 
   stop() {
-    clearTimeout(this.timer);
-    if (this.client) { try { this.client.end(true); } catch {} }
+    for (const c of this.clients) { try { c.end(true); } catch {} }
+    this.clients = [];
   }
 }

@@ -39,9 +39,13 @@ plaintext        = UTF-8(JSON) และต้องมี "ts" (Unix ms)
 
 - ผู้รับต้องทิ้งข้อความที่ถอดรหัสไม่ได้ หรือ `|now - ts| > 60 วินาที`
 - QoS 0, `retain = false` เสมอ (ไม่มีข้อมูลค้างบน broker)
-- Broker (สำรองกันอัตโนมัติ): `wss://broker.emqx.io:8084/mqtt`, `wss://broker.hivemq.com:8884/mqtt`
-  - ผู้ไลฟ์ **เชื่อมต่อทุก broker พร้อมกัน** และตอบกลับทาง broker ที่ได้รับ offer มา
-  - ผู้ชมใช้ broker แรกที่เชื่อมได้ ถ้า 8 วินาทียังไม่ได้ `status` ให้ลอง broker ถัดไป
+- Broker (สำรองกันอัตโนมัติ — broker ฟรีล่ม/ช้าเป็นช่วง ๆ):
+  1. `wss://broker.emqx.io:8084/mqtt`
+  2. `wss://mqtt-dashboard.com:8884/mqtt` (HiveMQ — เซิร์ฟเวอร์เดียวกับ `broker.hivemq.com` แต่ไม่มี IPv6 จึงต่อได้เร็วกว่า)
+  3. `wss://test.mosquitto.org:8081/mqtt`
+  - **ทั้งสองฝั่งเชื่อมต่อทุก broker พร้อมกัน**
+  - ผู้ไลฟ์ส่ง `status`/`end` ออกทุก broker และตอบ `answer`/`reject` ทาง broker ที่ได้รับ offer มา
+  - ผู้ชมรับข้อความจากทุก broker และส่ง `offer`/`bye` ออกทุก broker ที่ต่ออยู่
 
 ### ข้อความ MQTT
 
