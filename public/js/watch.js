@@ -27,11 +27,14 @@ const st = {
 
 // ---------- หน้าโหลด (ซากุระ) ----------
 // ความคืบหน้าเดินตามขั้นตอนจริง: 0 เปิดหน้า → 1 เชื่อมต่อ broker → 2 หาผู้ไลฟ์ → 3 ขอภาพ → เฟรมแรกขึ้นจอ = จบ
+// ใช้ซ้ำได้: ตอนเปิดหน้า (ลิงก์) และทุกครั้งที่กดดูไลฟ์จากรายการเกม (open) — ติดตามสถานะรายช่อง (track/tileState)
+// ปิดเมื่อทุกช่องที่ติดตามได้ภาพ หรือขึ้นสถานะอื่น (พัก/ออฟไลน์/เต็ม/จบ) หรือครบเวลากันค้าง
 const loader = (() => {
   const STEP_TEXT = ['กำลังเปิดหน้า…', 'กำลังเชื่อมต่อเซิร์ฟเวอร์…', 'กำลังค้นหาผู้ไลฟ์…', 'พบผู้ไลฟ์แล้ว <b>กำลังขอภาพ…</b>', 'กำลังรับภาพ…'];
   const PCT = [8, 30, 52, 74, 92];
-  const shownAt = Date.now();
-  let cur = -1, closed = false;
+  let shownAt = Date.now();
+  let cur = -1, closed = false, gen = 0, timer = null, onBack = null;
+  const tracked = new Map();   // id → { name, icon }  ('⏳' = ยังโหลด)
   function set(i) {
     if (closed || i <= cur) return;
     cur = i;
@@ -54,14 +57,91 @@ const loader = (() => {
   function close(fast = false) {
     if (closed) return;
     closed = true;
+    clearTimeout(timer);
     move(100);
+    const g = gen;
     const wait = fast ? 0 : Math.max(0, 1100 - (Date.now() - shownAt));   // เห็นหน้าโหลดอย่างน้อย ~1 วิ ไม่วูบ
     setTimeout(() => {
+      if (g !== gen) return;                // เปิดรอบใหม่ไปแล้ว
       $('splash').classList.add('done');
-      setTimeout(() => { $('splashPetals').replaceChildren(); $('splash').remove(); }, 700);
+      setTimeout(() => {
+        if (g !== gen) return;
+        $('splashPetals').replaceChildren();
+        $('splash').classList.add('hidden');
+      }, 700);
     }, wait + 250);
   }
-  return { step: set, done: () => close(false), skip: () => close(true), get closed() { return closed; } };
+  function renderTracked() {
+    const box = $('splashGames');
+    const items = [...tracked.values()];
+    box.classList.toggle('hidden', items.length < 2);
+    box.replaceChildren(...items.map(x => {
+      const li = document.createElement('li');
+      li.textContent = `${x.icon === '⏳' ? '⏳' : x.icon === 'ok' ? '✅' : x.icon} ${x.name}`;
+      if (x.icon === 'ok') li.className = 'ok';
+      return li;
+    }));
+  }
+  function checkDone() {
+    if (closed || !tracked.size) return;
+    const items = [...tracked.values()];
+    if (items.some(x => x.icon === '⏳')) return;
+    if (items.some(x => x.icon === 'ok')) close(false); else close(true);
+  }
+  return {
+    step: set,
+    done: () => close(false),
+    skip: () => close(true),
+    get closed() { return closed; },
+    /** เปิดหน้าโหลดรอบใหม่ — title: ชื่อเกม/จำนวนเกม · from: ขั้นเริ่ม · back: ปุ่ม "กลับไปรายการ" (null = ไม่มี) */
+    open({ title = 'Daily Task Live', from = 1, timeout = 15000, back = null } = {}) {
+      gen++;
+      closed = false;
+      cur = -1;
+      shownAt = Date.now();
+      tracked.clear();
+      renderTracked();
+      const sp = $('splash');
+      sp.classList.remove('hidden', 'done');
+      $('splashTitle').textContent = title;
+      onBack = back;
+      $('splashBack').classList.toggle('hidden', !back);
+      this.setWho(null);
+      [...$('splashSteps').children].forEach(li => li.classList.remove('done', 'active'));
+      move(0);
+      if (!$('splashPetals').children.length) spawnPetals($('splashPetals'), 26);
+      set(from);
+      clearTimeout(timer);
+      timer = setTimeout(() => close(true), timeout);
+    },
+    back() { const f = onBack; close(true); if (f) f(); },
+    /** ช่องที่หน้าโหลดรอ — [{id, name}] */
+    track(list) {
+      for (const x of list) tracked.set(x.id, { name: x.name || 'เกม', icon: '⏳' });
+      renderTracked();
+    },
+    /** ช่องนี้ได้ภาพแล้ว ('ok') หรือขึ้นสถานะอื่น (ไอคอนของสถานะนั้น) */
+    tileState(id, icon) {
+      const x = tracked.get(id);
+      if (!x || closed || x.icon === 'ok') return;
+      x.icon = icon;
+      renderTracked();
+      checkDone();
+    },
+    tileStep(id, n) {
+      if (tracked.has(id) && tracked.get(id).icon === '⏳') set(n);
+    },
+    /** ชิปบัญชีบนหน้าโหลด — {name, verified} หรือ null (ซ่อน) */
+    setWho(w) {
+      const chip = $('splashWho');
+      chip.classList.toggle('hidden', !w || !w.name);
+      if (!w || !w.name) return;
+      $('splashWhoName').textContent = w.name;
+      const v = $('splashWhoV');
+      v.textContent = w.verified ? '✅ Verify' : 'Unverify';
+      v.classList.toggle('ok', !!w.verified);
+    },
+  };
 })();
 
 // กลีบซากุระร่วง — DOM + CSS transform ล้วน (ไม่กิน CPU) หยุดเมื่อสลับแท็บ / ปิดเมื่อตั้ง "ลดการเคลื่อนไหว"
@@ -104,11 +184,9 @@ function setConn(text) { $('connLabel').textContent = text; }
 
 // ---------- เริ่มหน้า ----------
 async function main() {
-  loader.step(0);
-  spawnPetals($('splashPetals'), 26);
-  spawnPetals($('petals'), 14);
   // กันค้างหน้าโหลด (เช่น เน็ตต่อ broker ไม่ได้เลย) — 25 วิแล้วให้กล่องสถานะบนจอวิดีโอบอกแทน
-  setTimeout(() => loader.skip(), 25000);
+  loader.open({ from: 0, timeout: 25000 });
+  spawnPetals($('petals'), 14);
   setupChat();
   setupGate();
   setupGames();
@@ -130,6 +208,7 @@ async function main() {
     history.replaceState(null, '', location.pathname);
     showView('watch');
     const t = addTile({ id: 'link', name: '' }, false);
+    loader.track([{ id: 'link', name: 'ไลฟ์' }]);
     linkWho(t, token);
     await t.start(token);
     return;
@@ -145,8 +224,8 @@ function showView(v) {
   $('games').classList.toggle('hidden', v !== 'list');
   $('watch').classList.toggle('hidden', v !== 'watch');
   $('layout').classList.toggle('list-mode', v === 'list');
-  $('backBtn').classList.toggle('hidden', st.mode !== 'lobby');
-  document.querySelector('.watch-bar').classList.toggle('hidden', st.mode !== 'lobby');
+  $('backBtn').classList.toggle('hidden', !canList());
+  document.querySelector('.watch-bar').classList.toggle('hidden', !canList());
   if (v === 'list') {
     $('streamTitle').textContent = 'Daily Task Live';
     document.title = 'Daily Task Live';
@@ -155,6 +234,9 @@ function showView(v) {
   }
   updateComposer();
 }
+
+// ดูรายการเกมได้: โหมดเข้าสู่ระบบ หรือเปิดจากลิงก์แต่บัญชี Google ยังใช้ได้ (Verify/Unverify)
+function canList() { return st.mode === 'lobby' || !!st.acct; }
 
 function setBadge(on) {
   $('liveDot').classList.toggle('on', !!on);
@@ -165,8 +247,8 @@ function setBadge(on) {
 function addTile(game, closable) {
   const tile = new LiveTile({ id: game.id, name: game.name, mode: st.mode, closable }, {
     toast,
-    onStep: (t, n) => { if (st.tiles.size === 1 || n <= 2) loader.step(n); },
-    onFirstFrame: () => loader.done(),
+    onStep: (t, n) => loader.tileStep(t.id, n),
+    onFirstFrame: t => loader.tileState(t.id, 'ok'),
     onStatus: (t, m) => {
       if (typeof m.giphy === 'string' && m.giphy !== st.giphyKey) updateGiphy(m.giphy);
       if (st.mode === 'link' && t.title) { $('streamTitle').textContent = t.title; document.title = t.title + ' · Daily Task Live'; }
@@ -175,7 +257,7 @@ function addTile(game, closable) {
     onState: () => { refreshWatchHeader(); updateComposer(); },
     onCtl: onCtl,
     onEnd: t => {
-      if (st.mode === 'link') { setConn('จบไลฟ์'); loader.skip(); }
+      if (st.mode === 'link') { setConn('จบไลฟ์'); loader.tileState(t.id, '🏁'); }
       else scheduleList(3000);
       refreshWatchHeader();
     },
@@ -184,7 +266,10 @@ function addTile(game, closable) {
   });
   // หน้าโหลดปิดเมื่อมีข้อความสถานะที่ไม่ใช่ "กำลังโหลด" (เช่น พัก/ไม่พบ/จบ)
   const origOverlay = tile.setOverlay.bind(tile);
-  tile.setOverlay = (icon, title, sub) => { origOverlay(icon, title, sub); if (icon && !['⏳', '📡'].includes(icon)) loader.skip(); };
+  tile.setOverlay = (icon, title, sub) => {
+    origOverlay(icon, title, sub);
+    if (icon && !['⏳', '📡'].includes(icon)) loader.tileState(tile.id, icon);
+  };
   st.tiles.set(game.id, tile);
   $('grid').appendChild(tile.el);
   layoutGrid();
@@ -305,7 +390,8 @@ async function logout() {
   st.acct = null;
   clearTimeout(st.listTimer);
   closeAllTiles();
-  if (a) await Promise.race([st.lobby?.request({ t: 'logout', card: a.card }), new Promise(r => setTimeout(r, 1500))]);
+  const lb = st.lobby || (a ? new Lobby() : null);
+  if (a) await Promise.race([lb.request({ t: 'logout', card: a.card }), new Promise(r => setTimeout(r, 1500))]);
   try { window.google?.accounts?.id?.disableAutoSelect(); } catch {}
   location.reload();
 }
@@ -323,8 +409,47 @@ async function linkWho(tile, token) {
   try {
     lobby = new Lobby();
     const r = await lobby.request({ t: 'who', card: acct.card, sub: acct.sub, token: tok });
-    if (r && r.ok) tile.setWho(r.who);
+    if (r && r.ok) {
+      tile.setWho(r.who);
+      // บัญชียังใช้ได้ → มุมขวาบนมีปุ่มออกจากระบบ + แถบบนจอมี "← รายการเกม" (เหมือนโหมดเข้าสู่ระบบ)
+      st.acct = acct;
+      showAccount();
+      if (st.mode === 'link' && st.view === 'watch') showView('watch');
+      const w = whoInfo(r.who);
+      loader.setWho(w ? { name: w.name, verified: !!r.verified } : { name: acct.email, verified: !!r.verified });
+    }
   } catch {} finally { try { lobby?.stop(); } catch {} }
+}
+
+// อ่านชื่อจากบัตรชื่อ (ร้านเซ็นให้) เพื่อแสดงบนหน้าโหลดเท่านั้น — ไม่ได้ตรวจลายเซ็น (ผู้ไลฟ์เป็นคนตรวจ)
+function whoInfo(ticket) {
+  try {
+    const body = String(ticket || '').split('.')[0];
+    const json = new TextDecoder().decode(Uint8Array.from(atob(body.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)));
+    const d = JSON.parse(json);
+    const name = cleanText(d.n, 40, { singleLine: true });
+    return name ? { name, verified: d.v === 1 } : null;
+  } catch { return null; }
+}
+
+// เปิดจากลิงก์ (บัญชีใช้ได้) แล้วกด "← รายการเกม" → เลิกดูลิงก์นี้ เข้ารายการ "เกมของฉัน" โดยไม่ต้องล็อกอินใหม่
+async function linkToList() {
+  closeAllTiles();
+  st.mode = 'lobby';
+  st.target = 'all';
+  if (!st.lobby) st.lobby = new Lobby();
+  showView('list');
+  listMsg('กำลังโหลดรายการเกม…');
+  await lobbyStart();
+}
+
+function backToList() {
+  if (st.mode === 'link') { linkToList(); return; }
+  // กลับไปหน้ารายการ = เลิกดูทุกช่อง (ไม่กินโควตาผู้ชม/เน็ตของผู้ไลฟ์)
+  for (const id of st.tiles.keys()) if (!st.selected.has(id)) st.selected.add(id);
+  closeAllTiles();
+  showList();
+  refreshList();
 }
 
 function cleanGame(g) {
@@ -452,6 +577,13 @@ function watchGames(ids) {
   if (!games.length) { toast('เกมที่เลือกยังไม่ได้ไลฟ์'); return; }
   // เปิดช่องตามลำดับในรายการ (เข้าไอดีก่อน = ช่องแรก) · ช่องที่เปิดอยู่แล้วแต่ไม่ได้เลือก → ปิด
   for (const id of [...st.tiles.keys()]) if (!games.some(g => g.id === id)) closeTile(id);
+  const fresh = games.filter(g => !st.tiles.has(g.id));
+  if (fresh.length) {
+    loader.open({ title: games.length > 1 ? `ดู ${games.length} เกม` : label(games[0]), from: 1, timeout: 15000, back: backToList });
+    loader.track(fresh.map(g => ({ id: g.id, name: label(g) })));
+    const w = games.map(g => whoInfo(g.who)).find(Boolean);
+    loader.setWho(w ? { name: w.name, verified: true } : st.acct?.email ? { name: st.acct.email, verified: true } : null);
+  }
   for (const g of games) {
     let t = st.tiles.get(g.id);
     if (!t) { t = addTile({ ...g, name: label(g) }, true); t.setWho(g.who); t.start(g.token); }
@@ -540,13 +672,8 @@ function setupGames() {
   });
   $('watchSelBtn').addEventListener('click', () => watchGames([...st.selected]));
   $('refreshBtn').addEventListener('click', async () => { $('refreshBtn').disabled = true; await refreshList(); $('refreshBtn').disabled = false; });
-  $('backBtn').addEventListener('click', () => {
-    // กลับไปหน้ารายการ = เลิกดูทุกช่อง (ไม่กินโควตาผู้ชม/เน็ตของผู้ไลฟ์)
-    for (const id of st.tiles.keys()) if (!st.selected.has(id)) st.selected.add(id);
-    closeAllTiles();
-    showList();
-    refreshList();
-  });
+  $('backBtn').addEventListener('click', backToList);
+  $('splashBack').addEventListener('click', () => loader.back());
   $('logoutBtn').addEventListener('click', logout);
 }
 

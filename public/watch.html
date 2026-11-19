@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Itim&family=Sarabun:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/watch.css?v=5" />
+  <link rel="stylesheet" href="./css/watch.css?v=6" />
 </head>
 <body>
   <!-- หน้าโหลดตอนเปิดลิงก์ — ความคืบหน้าเดินตามขั้นตอนเชื่อมต่อจริง (js/watch.js: loader) -->
@@ -38,7 +38,8 @@
         </svg>
         <div class="orbit"><i></i><i></i><i></i></div>
       </div>
-      <h1 class="splash-title">Daily Task Live</h1>
+      <h1 class="splash-title" id="splashTitle">Daily Task Live</h1>
+      <div class="splash-who hidden" id="splashWho"><span aria-hidden="true">👤</span> <span id="splashWhoName"></span> · <span class="splash-v" id="splashWhoV"></span></div>
       <div class="splash-step" id="splashStep">กำลังเปิดหน้า…</div>
       <div class="progress" aria-hidden="true">
         <div class="progress-fill" id="splashFill"></div>
@@ -47,6 +48,8 @@
       <ol class="steps" id="splashSteps" aria-hidden="true">
         <li>เปิดหน้า</li><li>เชื่อมต่อ</li><li>หาผู้ไลฟ์</li><li>รับภาพ</li>
       </ol>
+      <ul class="splash-games hidden" id="splashGames"></ul>
+      <button type="button" class="splash-back hidden" id="splashBack">← กลับไปรายการ</button>
       <div class="splash-note">การเชื่อมต่อเข้ารหัสตลอดทาง · ไม่มีการเก็บประวัติแชต</div>
     </div>
   </div>
@@ -173,6 +176,6 @@
 
   <!-- integrity = ลายนิ้วมือไฟล์ ถ้า CDN ถูกแก้ไฟล์ เบราว์เซอร์จะไม่รันเลย -->
   <script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js" integrity="sha384-u4uqeACkFcoKl57rBQJHVGDd1pqhW4w8X3WjTu1ZksPdxoLqdt34jpoNkJisE25W" crossorigin="anonymous"></script>
-  <script type="module" src="./js/watch.js?v=10"></script>
+  <script type="module" src="./js/watch.js?v=11"></script>
 </body>
 </html>
