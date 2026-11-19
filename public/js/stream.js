@@ -27,6 +27,11 @@ function el(tag, cls, text) {
 
 const QUALITIES = [['source', 'ต้นฉบับ'], ['1080', '1080p'], ['720', '720p'], ['480', '480p'], ['360', '360p']];
 
+// บัฟเฟอร์ภาพฝั่งผู้ชม (RTCRtpReceiver.jitterBufferTarget) — ยอมให้ภาพช้าลงเพื่อให้เวลาแพ็กเก็ตที่ช้า/หายถูกส่งซ้ำทัน
+// ภาพแตก/กระตุกน้อยลง · Safari ไม่รองรับ (ซ่อนตัวเลือก ทำงานแบบดีเลย์ต่ำ)
+const BUFFERS = [['0', '⚡ ดีเลย์ต่ำ'], ['2000', '🛡 บัฟเฟอร์ 2 วิ'], ['5000', '🛡 บัฟเฟอร์ 5 วิ']];
+const BUFFER_OK = typeof RTCRtpReceiver !== 'undefined' && 'jitterBufferTarget' in RTCRtpReceiver.prototype;
+
 export class LiveTile {
   /**
    * @param {object} o  id (รหัสเกม/'link'), name (ชื่อที่แสดง), mode ('link' | 'lobby'), closable
@@ -45,6 +50,9 @@ export class LiveTile {
       noStreamerShown: false, retryTimer: null, answerTimer: null, title: '', firstFrame: false,
       quality: lsGet('dt_quality', 'source'),
       fps: Number(lsGet('dt_fps', '30')) || 30,
+      // ค่าเริ่มต้น = ดีเลย์ต่ำ: ทดสอบจำลองเน็ตหาย/แกว่งแล้ว บัฟเฟอร์ใหญ่ทำให้ Chrome ขอภาพเต็ม (PLI) บ่อยขึ้น
+      buffer: BUFFERS.some(([v]) => v === lsGet('dt_buffer', '0')) ? lsGet('dt_buffer', '0') : '0',
+      _prevStats: null,
     });
     this._build(o.closable);
     this._timers = [setInterval(() => this._checkStatus(), 2000), setInterval(() => this._updateStats(), 1000)];
@@ -83,9 +91,13 @@ export class LiveTile {
     for (const [val, label] of QUALITIES) { const op = el('option', null, label); op.value = val; this.qSel.appendChild(op); }
     this.fpsSel = el('select', 'quality hidden');
     this.fpsSel.setAttribute('aria-label', 'เฟรมต่อวินาที');
+    this.bufSel = el('select', 'quality' + (BUFFER_OK ? '' : ' hidden'));
+    this.bufSel.setAttribute('aria-label', 'บัฟเฟอร์ภาพ');
+    this.bufSel.title = 'บัฟเฟอร์มาก = ภาพช้ากว่าจริงแต่แตก/กระตุกน้อยลง (เหมาะกับเน็ตไม่นิ่ง)';
+    for (const [val, label] of BUFFERS) { const op = el('option', null, label); op.value = val; this.bufSel.appendChild(op); }
     this.expandBtn = this._btn('⤢', 'ขยายช่องนี้ / กลับไปดูทุกช่อง');
     this.fsBtn = this._btn('⛶', 'เต็มจอ');
-    c.append(this.muteBtn, this.volume, this.volVal, el('span', 'spacer'), this.stats, this.qSel, this.fpsSel, this.expandBtn, this.fsBtn);
+    c.append(this.muteBtn, this.volume, this.volVal, el('span', 'spacer'), this.stats, this.qSel, this.fpsSel, this.bufSel, this.expandBtn, this.fsBtn);
     if (closable) {
       this.closeBtn = this._btn('✕', 'ปิดช่องนี้');
       c.appendChild(this.closeBtn);
@@ -98,6 +110,7 @@ export class LiveTile {
     v.volume = vol / 100;
     this.volVal.textContent = vol + '%';
     this.qSel.value = this.quality;
+    this.bufSel.value = this.buffer;
 
     this.volume.addEventListener('input', () => {
       const n = Number(this.volume.value);
@@ -120,6 +133,12 @@ export class LiveTile {
       lsSet('dt_fps', String(this.fps));
       this.sendCtl({ t: 'quality', fps: this.fps });
       this.hooks.toast?.(`${this.name || 'ไลฟ์'}: ${this.fps} fps`);
+    });
+    this.bufSel.addEventListener('change', () => {
+      this.buffer = this.bufSel.value;
+      lsSet('dt_buffer', this.buffer);
+      this._applyBuffer();
+      this.hooks.toast?.(`${this.name || 'ไลฟ์'}: ${this.bufSel.selectedOptions[0].textContent}`);
     });
     this.expandBtn.addEventListener('click', () => this.hooks.onExpand?.(this));
     const fs = () => {
@@ -306,6 +325,7 @@ export class LiveTile {
 
     pc.ontrack = e => {
       if (e.track.kind === 'video') this._waitFirstFrame();
+      this._applyBuffer(e.receiver);
       const v = this.video;
       const ms = v.srcObject instanceof MediaStream ? v.srcObject : new MediaStream();
       ms.addTrack(e.track);
@@ -402,6 +422,14 @@ export class LiveTile {
     sel.classList.remove('hidden');
   }
 
+  /** ตั้งบัฟเฟอร์ให้ทั้งภาพและเสียง (ให้ยังตรงกัน) — ไม่ระบุ receiver = ทุกตัวของการเชื่อมต่อนี้ */
+  _applyBuffer(receiver) {
+    if (!BUFFER_OK) return;
+    const ms = clampInt(Number(this.buffer), 0, 5000, 0);
+    const list = receiver ? [receiver] : (this.pc ? this.pc.getReceivers() : []);
+    for (const r of list) { try { r.jitterBufferTarget = ms; } catch {} }
+  }
+
   async _updateStats() {
     const pc = this.pc;
     if (!pc || pc.connectionState !== 'connected') return;
@@ -410,7 +438,24 @@ export class LiveTile {
       stats.forEach(r => {
         if (r.type === 'inbound-rtp' && r.kind === 'video' && r.frameWidth) {
           const fps = r.framesPerSecond ? Math.round(r.framesPerSecond) : '–';
-          this.stats.textContent = `${r.frameWidth}×${r.frameHeight} · ${fps}fps`;
+          // ต่อวินาที: แพ็กเก็ตหาย % และดีเลย์บัฟเฟอร์จริง (เฉลี่ยเวลาที่เฟรมรอในบัฟเฟอร์)
+          const p = this._prevStats;
+          const cur = {
+            lost: r.packetsLost || 0, recv: r.packetsReceived || 0, nack: r.nackCount || 0, pli: r.pliCount || 0,
+            jbd: r.jitterBufferDelay || 0, jbn: r.jitterBufferEmittedCount || 0, freeze: r.freezeCount || 0,
+          };
+          this._prevStats = cur;
+          let extra = '';
+          if (p) {
+            const dl = Math.max(0, cur.lost - p.lost), dr = Math.max(0, cur.recv - p.recv);
+            const loss = dl + dr ? (dl * 100) / (dl + dr) : 0;
+            const dn = cur.jbn - p.jbn;
+            const delay = dn > 0 ? ((cur.jbd - p.jbd) / dn) * 1000 : 0;
+            if (loss >= 0.1) extra += ` · เน็ตหาย ${loss.toFixed(1)}%`;
+            if (delay >= 150) extra += ` · ดีเลย์ ${(delay / 1000).toFixed(1)} วิ`;
+          }
+          this.stats.textContent = `${r.frameWidth}×${r.frameHeight} · ${fps}fps${extra}`;
+          this.stats.title = `แพ็กเก็ตหายระหว่างทางสะสม ${cur.lost} · ขอส่งซ้ำ ${cur.nack} · ขอภาพเต็ม ${cur.pli} · ภาพค้าง ${cur.freeze} ครั้ง`;
         }
       });
     } catch {}

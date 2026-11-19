@@ -3,7 +3,7 @@
 //  • ไม่มีลิงก์ → เข้าสู่ระบบด้วย Google → รายการ "เกมของฉัน" → ดูเกมเดียว หรือหลายเกมพร้อมกัน (สูงสุด 4)
 import { parseToken } from './crypto.js?v=2';
 import { Lobby } from './lobby.js?v=2';
-import { LiveTile } from './stream.js?v=2';
+import { LiveTile } from './stream.js?v=3';
 import {
   MAX_FILE, OK_MIME, REASON_TEXT, cleanText, safeJson, safeGiphyUrl, clampInt, sanitizeImageFile,
 } from './security.js?v=1';
